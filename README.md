@@ -53,11 +53,11 @@ A web application that helps users master chess openings through interactive les
 ┌──────────────────────────────────────────────────────────┐
 │                      CLIENT (SPA)                        │
 │                                                          │
-│  ┌─────────────┐  ┌──────────────┐  ┌────────────────┐  │
-│  │  Lessons UI  │  │  Puzzles UI  │  │  Dashboard UI  │  │
-│  └──────┬──────┘  └──────┬───────┘  └───────┬────────┘  │
-│         │                │                   │           │
-│  ┌──────┴────────────────┴───────────────────┴────────┐  │
+│  ┌─────────────┐  ┌──────────────┐  ┌────────────────┐   │
+│  │  Lessons UI │  │  Puzzles UI  │  │  Dashboard UI  │   │
+│  └──────┬──────┘  └──────┬───────┘  └───────┬────────┘   │
+│         │                │                  │            │
+│  ┌──────┴────────────────┴──────────────────┴──────-──┐  │
 │  │              React + React Router                  │  │
 │  │         react-chessboard  ·  chess.js              │  │
 │  │         Web Speech API (TTS + STT)                 │  │
@@ -80,10 +80,10 @@ A web application that helps users master chess openings through interactive les
 │                                                          │
 │  ┌────────────────────────────────────────────────────┐  │
 │  │           Cloud Functions (Node.js)                │  │
-│  │  • SM-2 scheduling engine                         │  │
-│  │  • AI explanation generator (Claude API)          │  │
-│  │  • Progress aggregation / analytics               │  │
-│  │  • Lichess PGN ingestion pipeline                 │  │
+│  │  • SM-2 scheduling engine                          │  │
+│  │  • AI explanation generator (Claude API)           │  │
+│  │  • Progress aggregation / analytics                │  │
+│  │  • Lichess PGN ingestion pipeline                  │  │
 │  └────────────────────────────────────────────────────┘  │
 │                                                          │
 │  ┌────────────────────────────────────────────────────┐  │
@@ -100,7 +100,7 @@ A web application that helps users master chess openings through interactive les
 │                            │                             │
 │                            ▼                             │
 │                     Cloud Firestore                      │
-│                  (lessons + puzzles)                      │
+│                  (lessons + puzzles)                     │
 └──────────────────────────────────────────────────────────┘
 ```
 
@@ -273,13 +273,13 @@ The `ts-fsrs` library handles scheduling. A thin wrapper in `lib/sm2.js` maps ou
 
 ```
 ┌────────────────────┐     ┌───────────────────────┐
-│  SpeechRecognition  │────►│  Answer text (string)  │
-│  (Web Speech API)   │     │  → sent for grading    │
+│  SpeechRecognition  │────►│  Answer text (string)│
+│  (Web Speech API)   │     │  → sent for grading  │
 └────────────────────┘     └───────────────────────┘
 
 ┌────────────────────┐     ┌───────────────────────┐
-│  SpeechSynthesis   │◄────│  Explanation text      │
-│  (Web Speech API)  │     │  (from lesson data)    │
+│  SpeechSynthesis   │◄────│  Explanation text     │
+│  (Web Speech API)  │     │  (from lesson data)   │
 └────────────────────┘     └───────────────────────┘
 ```
 
