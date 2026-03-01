@@ -1,29 +1,29 @@
 // sw.js — Service Worker for Chess Opening Trainer
 // Strategy: Cache-first for all static assets.
 
-const CACHE_VERSION = 'chess-trainer-v1.0.0';
+const CACHE_VERSION = 'chess-trainer-v1.0.1';
 
 const STATIC_ASSETS = [
-  '/',
-  '/index.html',
-  '/manifest.json',
-  '/css/style.css',
-  '/css/chessground.base.css',
-  '/css/chessground.brown.css',
-  '/css/chessground.cburnett.css',
-  '/js/app.js',
-  '/js/db.js',
-  '/js/dag.js',
-  '/js/fen.js',
-  '/js/sm2.js',
-  '/js/utils.js',
-  '/js/board.js',
-  '/js/pages/study.js',
-  '/js/pages/browse.js',
-  '/js/pages/practice.js',
-  '/js/pages/manage.js',
-  '/lib/chess.min.js',
-  '/lib/chessground.min.js',
+  './',
+  './index.html',
+  './manifest.json',
+  './css/style.css',
+  './css/chessground.base.css',
+  './css/chessground.brown.css',
+  './css/chessground.cburnett.css',
+  './js/app.js',
+  './js/db.js',
+  './js/dag.js',
+  './js/fen.js',
+  './js/sm2.js',
+  './js/utils.js',
+  './js/board.js',
+  './js/pages/study.js',
+  './js/pages/browse.js',
+  './js/pages/practice.js',
+  './js/pages/manage.js',
+  './lib/chess.min.js',
+  './lib/chessground.min.js',
 ];
 
 // Install — cache all static assets

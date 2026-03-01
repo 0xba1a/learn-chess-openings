@@ -1,7 +1,7 @@
 {
   "name": "Chess Opening Trainer",
   "short_name": "ChessTrainer",
-  "start_url": "/",
+  "start_url": ".",
   "display": "standalone",
   "background_color": "#312e2b",
   "theme_color": "#312e2b",
