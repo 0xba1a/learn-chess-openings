@@ -1,1351 +1,1488 @@
-# Chess Mastery System — Development Plan
-**Version 2.1 · February 2026**
+# Chess Opening Trainer — Design Document v1.0
 
-> A positional understanding system built on a filtered opening DAG, LLM-generated reasoning, and structured puzzles.
->
-> **Current scope:** Build-time pipeline only — DAG construction, lesson generation, and puzzle generation. Runtime application (SRS, API, frontend) is deferred to a future phase.
-
----
-
-## Changelog
-
-### v2.1 (current) — Scope reduction
-- Removed SRS engine, API layer, frontend, and update pipeline from current scope
-- Focus narrowed to build-time pipeline: DAG + Lessons + Puzzles
-- Removed Firebase references from README
-- SRS tables kept in schema for forward-compatibility but not implemented yet
-- Development phases reduced to 3 (from 7)
-
-### v2.0 — Design review fixes
-| Problem | Resolution |
-|---|---|
-| README ↔ Design Doc architectural contradiction (Firebase vs PostgreSQL/FastAPI) | Unified on PostgreSQL + FastAPI backend, React frontend via Vite, Docker Compose deployment |
-| FEN as TEXT primary key (slow joins, wasted storage) | Surrogate `BIGINT` PK with unique index on FEN |
-| PGN parser bug: `board.san(move)` called after `board.push(move)` | Fixed: SAN generated before push |
-| Memory-unbounded aggregator | Streaming aggregation with bounded dict + incremental DB flush |
-| No Stockfish parallelization strategy | Worker pool with configurable concurrency + checkpointing |
-| Eval perspective bug in anti-move tagger | Correct sign handling for both eval_before and eval_after |
-| LLM pipeline: no error handling, no resume | Retry with exponential backoff, JSON validation, checkpoint table |
-| Session builder: no bucket fallback | Overflow system: unfilled buckets redistribute to others |
-| Transposition path explosion | Store only top-K canonical paths (K=5), drop rest |
-| LLM cost underestimated | Detailed cost model + depth-prioritized generation |
-| Puzzle distractor generation hand-waved | Explicit LLM distractor pipeline at build time with fallback heuristics |
-| Missing database indexes | Full index strategy for all runtime queries |
-| No observability | Structured logging + pipeline progress table |
-| Aggressive timeline | Adjusted to 28 weeks with buffer phases |
+**Date:** March 1, 2026
+**Status:** Draft
+**Architecture:** Fully offline browser PWA — Vanilla JS + Chessground + chess.js + IndexedDB
 
 ---
 
 ## Table of Contents
 
-1. [Project Overview](#1-project-overview)
-2. [System Architecture](#2-system-architecture)
-3. [High Level Design](#3-high-level-design)
-4. [Low Level Design](#4-low-level-design)
-5. [Development Phases](#5-development-phases)
-6. [Future Work](#6-future-work)
-7. [Open Questions and Decisions](#7-open-questions-and-decisions)
+1. [Overview](#1-overview)
+2. [Goals & Non-Goals](#2-goals--non-goals)
+3. [Architecture](#3-architecture)
+4. [Project Structure](#4-project-structure)
+5. [Data Model](#5-data-model)
+6. [FEN Normalization](#6-fen-normalization)
+7. [DAG Operations](#7-dag-operations)
+8. [SM2 Spaced Repetition](#8-sm2-spaced-repetition)
+9. [Practice Engine — Pivot & Prompt Logic](#9-practice-engine--pivot--prompt-logic)
+10. [Pages](#10-pages)
+11. [Board Integration](#11-board-integration)
+12. [SPA Routing](#12-spa-routing)
+13. [Offline & PWA](#13-offline--pwa)
+14. [Data Portability](#14-data-portability)
+15. [Deployment](#15-deployment)
+16. [Open Questions & Future Work](#16-open-questions--future-work)
 
 ---
 
-## 1. Project Overview
+## 1. Overview
 
-### Problem Statement
-Mastering chess is impossible by studying the full game tree (estimated 10^120 positions). The goal is to build a personalized, data-driven system that:
-- Filters the game tree to only positions that matter at a target rating range
-- Teaches the *reasoning* behind every move, not just the move itself
-- Reinforces learning through position-aware spaced repetition
-- Propagates mistakes through the positional graph so related positions are reviewed together
+A fully offline, browser-based chess opening trainer. The user feeds in opening lines they learn (from books, courses, videos) by making moves on an interactive board, annotating each half-move with a reason. The system stores all studied lines in a **directed acyclic graph (DAG)** keyed by normalized FEN. Positions shared across lines are merged automatically (transpositions). The user practices lines via **SM2 spaced repetition**, with the system auto-playing the opponent's side and evaluating the user's moves.
 
-### Core Concepts
-
-**The 10% Rule** — At any position, only moves played in more than 10% of games at the target rating band are included as children. This limits the branching factor to 2–4 per node and makes the tree tractable.
-
-**Anti-moves** — Moves flagged by a chess engine (Stockfish) where evaluation drops beyond a threshold, regardless of how frequently they appear in games. These are explicitly taught as moves to avoid.
-
-**DAG not Tree** — The same chess position can be reached via different move orders (transpositions). The data structure is a Directed Acyclic Graph keyed by FEN string, not a tree. Multiple parent nodes can point to the same child.
-
-**Node-level SRS** — Spaced repetition is applied to positions (nodes), not individual flashcard questions. A mistake on any puzzle for a node triggers a ripple reschedule of neighboring nodes in the graph.
-
-### Scope
-
-**Current (Phases 1–3):**
-- Build the opening DAG from Lichess PGN data
-- Generate LLM-powered lesson reasoning for every edge
-- Generate puzzle definitions for every node
-- PostgreSQL as the data store
-- All build-time pipeline, no runtime application yet
-
-**General constraints:**
-- Opening phase focus (moves 1–20 approximately)
-- Configurable rating band (default: 1000–1600 ELO)
-- Multi-user ready schema (for future runtime use)
-- Starting color selectable (study as Black, White, or both)
-
-**Deferred (future phases):**
-- SRS engine with ripple propagation
-- REST API (FastAPI)
-- React frontend (DAG explorer, lesson view, puzzle UI, dashboard)
-- Periodic update pipeline
+**Key differentiator:** No pre-loaded database. Every opening line is manually curated by the user. The system is a personal repertoire builder and drill tool, not a generic opening explorer.
 
 ---
 
-## 2. System Architecture
+## 2. Goals & Non-Goals
 
-```
-┌─────────────────────────────────────────────────────────┐
-│              BUILD-TIME PIPELINE (current scope)        │
-│                                                         │
-│  Lichess PGN → PGN Parser → Aggregator → DAG Filter    │
-│                                 ↓                       │
-│                    Transposition Detector                │
-│                                 ↓                       │
-│                    Stockfish Anti-move Tagger            │
-│                                 ↓                       │
-│                    ECO Mapper                            │
-│                                 ↓                       │
-│                    Study Plan Generator (Claude API)     │
-│                                 ↓                       │
-│                    Puzzle Generator                      │
-│                                 ↓                       │
-│                    PostgreSQL Database                   │
-│                                                         │
-│  Pipeline Orchestrator (checkpointing + progress)       │
-└─────────────────────────────────────────────────────────┘
+### Goals
 
-┌─────────────────────────────────────────────────────────┐
-│              RUNTIME APPLICATION (future)               │
-│                                                         │
-│   REST API (FastAPI) · SRS Engine · React Frontend      │
-└─────────────────────────────────────────────────────────┘
-```
+| # | Goal |
+|---|------|
+| G1 | User can input opening lines by making moves on a visual board, annotating each half-move with a reason |
+| G2 | Lines are stored as a FEN-keyed DAG; shared prefixes/transpositions merge into shared nodes |
+| G3 | User can name any node (opening name, variation, sub-variation); a node's full name is the concatenation of all ancestor names |
+| G4 | SM2 spaced repetition schedules line reviews; each line is one SM2 item |
+| G5 | During practice, if the user plays a valid move belonging to a different line in the DAG, the system accepts it and pivots to that line (see §9) |
+| G6 | The system prompts the user to try alternative variations that are overdue for review (see §9) |
+| G7 | User can select any node/subtree to scope practice to that portion of the repertoire |
+| G8 | Fully offline after first load — no server, no login, no external API calls |
+| G9 | Data stored in IndexedDB; exportable/importable as JSON for backup |
+| G10 | Deployable as static files to GitHub Pages / Netlify / Vercel |
 
-### Technology Decision
+### Non-Goals
 
-The pipeline uses **Python** for all processing and **PostgreSQL** for storage. Rationale:
-
-- `python-chess` is the best chess library available (PGN parsing, FEN normalization, board state, Stockfish integration). No JavaScript equivalent matches it.
-- PostgreSQL with relational schema is the natural fit for a DAG with rich metadata and graph queries. The schema is designed to support future runtime features (SRS, API) without migration.
-- All pipeline steps are Python scripts that can be run independently or orchestrated together.
+| # | Non-Goal |
+|---|---------|
+| NG1 | Engine evaluation or Stockfish integration (user provides their own reasoning) |
+| NG2 | Multiplayer or social features |
+| NG3 | Auto-importing from Lichess/Chess.com/PGN databases |
+| NG4 | User accounts or server-side storage (future: Google Drive sync) |
+| NG5 | Mobile-native app (PWA suffices) |
 
 ---
 
-## 3. High Level Design
+## 3. Architecture
 
-### 3.1 Component Overview
-
-| Component | Responsibility | Phase |
-|---|---|---|
-| **DAG Builder** | Parse PGN files, build filtered position graph, tag transpositions | Phase 1 |
-| **Anti-move Tagger** | Run Stockfish on every node, flag dangerous moves | Phase 1 |
-| **ECO Mapper** | Map FEN positions to opening names via ECO codes | Phase 1 |
-| **Study Plan Generator** | Generate per-node reasoning using LLM + engine context | Phase 2 |
-| **Puzzle Generator** | Create 6–10 puzzle variants per node from existing data | Phase 3 |
-
-**Deferred components (future phases):**
-
-| Component | Responsibility |
-|---|---|
-| SRS Engine | Schedule reviews, track mastery, propagate mistakes |
-| REST API | Serve all data to frontend, handle user session state |
-| React Frontend | Interactive DAG, lesson view, puzzle UI, dashboard |
-| Update Pipeline | Diff new PGN data against existing DAG, patch and regenerate |
-
-### 3.2 Data Flow
-
-#### Build-time Flow
 ```
-1. Raw PGN files (Lichess monthly export, filtered by rating + time control)
-       ↓
-2. PGN Parser — replays every game, records (FEN, move, result) tuples
-       ↓
-3. Aggregator — groups by FEN, counts move frequencies, calculates win rates
-       (streaming with bounded memory, incremental DB upserts)
-       ↓
-4. DAG Filter — applies 10% threshold, builds parent→child edges
-       ↓
-5. Transposition Detector — identifies shared FENs across different move paths
-       (stores top-5 canonical paths only)
-       ↓
-6. Stockfish Runner — evaluates every position via worker pool
-       (configurable concurrency, checkpoint after each batch)
-       ↓
-7. ECO Mapper — looks up opening names for known FEN positions
-       ↓
-8. Study Plan Generator — for each node: passes FEN + context to LLM,
-       stores generated reasoning per move
-       (retry with backoff, JSON validation, checkpoint per node)
-       ↓
-9. Puzzle Generator — creates puzzle definitions per node
-       (distractors generated via lightweight LLM call, stored statically)
-       ↓
-10. PostgreSQL — final persisted state, ready for runtime queries
+┌─────────────────────────────────────────────────────┐
+│                    Browser (PWA)                     │
+│                                                      │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐           │
+│  │  Study    │  │  Browse   │  │ Practice │           │
+│  │  Page     │  │  Page     │  │  Page    │           │
+│  └────┬─────┘  └────┬─────┘  └────┬─────┘           │
+│       │              │              │                 │
+│  ┌────┴──────────────┴──────────────┴─────┐          │
+│  │              app.js (SPA Router)        │          │
+│  └────┬──────────────┬──────────────┬─────┘          │
+│       │              │              │                 │
+│  ┌────┴────┐   ┌─────┴────┐  ┌─────┴─────┐          │
+│  │ board.js│   │  dag.js   │  │  sm2.js   │          │
+│  │(ground +│   │(DAG ops)  │  │(scheduler)│          │
+│  │chess.js)│   └─────┬─────┘  └─────┬─────┘          │
+│  └─────────┘         │              │                 │
+│                 ┌────┴──────────────┴─────┐          │
+│                 │        db.js             │          │
+│                 │   (IndexedDB wrapper)    │          │
+│                 └────────────┬────────────┘          │
+│                              │                       │
+│                    ┌─────────┴─────────┐             │
+│                    │    IndexedDB       │             │
+│                    │  (nodes, edges,    │             │
+│                    │   lines, settings, │             │
+│                    │   names)           │             │
+│                    └───────────────────┘             │
+│                                                      │
+│  ┌───────────────────────────────────────┐           │
+│  │  Service Worker (sw.js) — cache all   │           │
+│  │  assets for offline-first operation   │           │
+│  └───────────────────────────────────────┘           │
+└─────────────────────────────────────────────────────┘
 ```
 
-#### Runtime Flow (future — not in current scope)
+**Layers:**
 
-The runtime application (SRS engine, API, frontend) will consume the
-pre-generated data in PostgreSQL. This is designed but not yet implemented.
+1. **Pages** — UI components for each screen (Study, Browse, Practice, Manage)
+2. **Core modules** — `board.js` (rendering + move logic), `dag.js` (graph operations), `sm2.js` (scheduling)
+3. **Storage** — `db.js` wraps IndexedDB with a promise-based API
+4. **Offline** — Service worker caches all static assets; PWA manifest enables "Add to Home Screen"
 
-### 3.3 Technology Stack
-
-| Layer | Technology | Reason |
-|---|---|---|
-| Pipeline Language | Python 3.11+ | `python-chess` library for PGN parsing and FEN handling |
-| PGN Parsing | `python-chess` | Best-in-class chess library, handles all edge cases |
-| Engine Integration | Stockfish 16 + `stockfish` Python wrapper | Industry standard, free, runs locally |
-| LLM Reasoning | Claude API (claude-sonnet-4-6) | Best reasoning quality for chess position explanation |
-| Database | PostgreSQL 16 | Handles graph relationships, JSONB for flexible fields |
-| Graph Queries | Recursive CTEs | Native PostgreSQL graph traversal, no extensions needed |
-| Logging | `structlog` (Python) | Structured JSON logging for pipeline observability |
-| Deployment | Docker Compose (PostgreSQL) | Reproducible database setup |
-
-### 3.4 Build-time Pipeline
-
-All current work is **build-time** — expensive computation that runs once and stores results in PostgreSQL.
-
-| Operation | Why build-time |
-|---|---|
-| PGN parsing | Hours of computation, not acceptable at runtime |
-| Stockfish analysis | CPU-intensive, pre-computed and stored |
-| LLM reasoning generation | API cost and latency, run once per node |
-| Puzzle definition creation | Deterministic from stored data |
+**No build step.** All JS uses ES modules (`<script type="module">`). Libraries are vendored into `lib/`.
 
 ---
 
-## 4. Low Level Design
+## 4. Project Structure
 
-### 4.1 Database Schema
-
-#### Design Decisions
-- **Surrogate `BIGINT` IDs** instead of FEN-as-PK. FEN strings are 50–80 characters; using them as foreign keys in every child table wastes storage and slows joins. A `BIGINT` PK + unique index on FEN gives O(1) lookups with compact foreign keys.
-- **Explicit indexes** on every column used in runtime WHERE clauses or JOINs.
-
-#### Core Tables
-
-```sql
--- Every unique chess position is a node
-CREATE TABLE nodes (
-    id                  BIGSERIAL PRIMARY KEY,
-    fen                 TEXT NOT NULL UNIQUE,
-    name                TEXT,                    -- e.g. "Sicilian Najdorf"
-    eco_code            TEXT,                    -- e.g. "B90"
-    depth               INTEGER,                 -- half-moves from start
-    total_games         INTEGER,                 -- games reaching this position
-    white_wins          FLOAT,                   -- win rate 0.0–1.0
-    draws               FLOAT,
-    black_wins          FLOAT,
-    first_seen          DATE,                    -- when first added to DAG
-    last_updated        DATE
-);
-
-CREATE INDEX idx_nodes_eco ON nodes(eco_code);
-CREATE INDEX idx_nodes_depth ON nodes(depth);
-CREATE INDEX idx_nodes_name_trgm ON nodes USING gin (name gin_trgm_ops);
-
--- Directed edges between positions
-CREATE TABLE edges (
-    id                  BIGSERIAL PRIMARY KEY,
-    parent_node_id      BIGINT NOT NULL REFERENCES nodes(id),
-    child_node_id       BIGINT NOT NULL REFERENCES nodes(id),
-    move_san            TEXT,                    -- e.g. "Nf6" (Standard Algebraic)
-    move_uci            TEXT,                    -- e.g. "g8f6" (UCI format)
-    frequency           FLOAT,                  -- % of games from parent taking this move
-    is_main_line        BOOLEAN,                 -- highest frequency child
-    is_anti_move        BOOLEAN DEFAULT FALSE,
-    eval_before         FLOAT,                   -- Stockfish centipawn before move
-    eval_after          FLOAT,                   -- Stockfish centipawn after move
-    eval_drop           FLOAT,                   -- computed: eval_after - eval_before
-    UNIQUE (parent_node_id, move_uci)
-);
-
-CREATE INDEX idx_edges_parent ON edges(parent_node_id);
-CREATE INDEX idx_edges_child ON edges(child_node_id);
-CREATE INDEX idx_edges_anti ON edges(is_anti_move) WHERE is_anti_move = TRUE;
-
--- Transposition tracking — same FEN reachable from multiple parents
--- Stores only top-K paths (default K=5) to prevent explosion
-CREATE TABLE transpositions (
-    node_id             BIGINT PRIMARY KEY REFERENCES nodes(id),
-    canonical_path      TEXT[],                  -- most common move sequence to reach this FEN
-    alternative_paths   JSONB,                   -- top-4 other move sequences (capped)
-    path_count          INTEGER                  -- total distinct paths (even if not all stored)
-);
-
--- Pre-generated reasoning for each move
-CREATE TABLE node_reasoning (
-    id                  BIGSERIAL PRIMARY KEY,
-    edge_id             BIGINT NOT NULL REFERENCES edges(id),
-    color               CHAR(1),                 -- 'w' or 'b' (whose perspective)
-    why_play            TEXT,                     -- reasoning to make this move
-    why_not             TEXT,                     -- reasoning against anti-moves
-    what_opponent_wants TEXT,                     -- if opponent's turn
-    game_plan           TEXT,                     -- strategic plan after this move
-    key_ideas           TEXT[],                   -- bullet points of key concepts
-    generated_at        TIMESTAMP,
-    model_version       TEXT,                     -- which LLM version generated this
-    prompt_version      TEXT                      -- which prompt template was used
-);
-
-CREATE INDEX idx_reasoning_edge ON node_reasoning(edge_id);
-
--- ECO code reference table
-CREATE TABLE eco_codes (
-    code                TEXT PRIMARY KEY,         -- e.g. "B20"
-    name                TEXT,                     -- e.g. "Sicilian Defence"
-    moves               TEXT,                     -- PGN move sequence
-    node_id             BIGINT REFERENCES nodes(id)
-);
+```
+/
+├── index.html                     # SPA shell, nav bar, page container
+├── manifest.json                  # PWA manifest (name, icons, theme)
+├── sw.js                          # Service worker — cache-first strategy
+├── css/
+│   ├── style.css                  # App layout, nav, typography, theme
+│   ├── chessground.base.css       # Vendored chessground base styles
+│   ├── chessground.brown.css      # Board color theme
+│   └── chessground.cburnett.css   # Piece set theme (CBurnett SVGs)
+├── js/
+│   ├── app.js                     # SPA router, nav controller, page lifecycle
+│   ├── db.js                      # IndexedDB wrapper (open, get, put, getAll, delete, query by index)
+│   ├── dag.js                     # DAG operations (addLine, getChildren, getFullName, getLinesByName, etc.)
+│   ├── fen.js                     # FEN normalization utility
+│   ├── sm2.js                     # SM2 algorithm + due-line queries
+│   ├── board.js                   # Chessground + chess.js integration
+│   ├── utils.js                   # Shared helpers
+│   └── pages/
+│       ├── study.js               # Feed-in page: board + reason annotations
+│       ├── browse.js              # DAG tree explorer, node naming
+│       ├── practice.js            # SM2-driven quiz with pivot logic
+│       └── manage.js              # Export / import / clear data
+├── lib/
+│   ├── chessground.min.js         # Vendored chessground ESM bundle
+│   ├── chess.min.js               # Vendored chess.js ESM bundle
+│   └── assets/                    # Piece SVGs for chessground
+│       ├── wK.svg, wQ.svg, ...    # White pieces
+│       └── bK.svg, bQ.svg, ...    # Black pieces
+└── docs/
+    └── design_document.md         # This file
 ```
 
-#### Puzzle Tables
+---
 
-```sql
-CREATE TYPE puzzle_type AS ENUM (
-    'best_move',
-    'why_this_move',
-    'why_not_move',
-    'game_plan',
-    'consequence',
-    'predict_opponent',
-    'threat_recognition',
-    'best_response',
-    'trap_recognition',
-    'transposition_awareness'
-);
+## 5. Data Model
 
-CREATE TABLE puzzles (
-    id                  BIGSERIAL PRIMARY KEY,
-    node_id             BIGINT NOT NULL REFERENCES nodes(id),
-    puzzle_type         puzzle_type NOT NULL,
-    color               CHAR(1),                 -- whose perspective
-    difficulty_tier     INTEGER CHECK (difficulty_tier BETWEEN 1 AND 5),
-    question            TEXT NOT NULL,
-    correct_answer      TEXT,                     -- for move puzzles: UCI move
-    correct_reasoning   TEXT,                     -- explanation of correct answer
-    wrong_options       JSONB,                   -- [{move, reasoning_why_wrong}]
-    related_edge_id     BIGINT REFERENCES edges(id)
-);
+All data lives in **IndexedDB**, database name: `chess-opening-trainer`, version `1`.
 
-CREATE INDEX idx_puzzles_node ON puzzles(node_id);
-CREATE INDEX idx_puzzles_node_type ON puzzles(node_id, puzzle_type);
-CREATE INDEX idx_puzzles_tier ON puzzles(difficulty_tier);
+### 5.1 Object Store: `nodes`
+
+Each node represents a unique chess position in the user's repertoire.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `fen` | `string` (PK) | Normalized FEN (see §6). Primary key. |
+| `name` | `string \| null` | User-given name for this position (e.g., "Ruy Lopez", "Berlin Defense") |
+| `notes` | `string` | Free-text notes about this position |
+| `createdAt` | `number` | Unix timestamp (ms) when the node was first created |
+
+**Indexes:**
+- Primary key: `fen` (unique, inline)
+- `byName`: index on `name` — look up nodes by their user-assigned name
+
+### 5.2 Object Store: `edges`
+
+Each edge represents a move connecting two positions in the DAG.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | `number` (PK) | Auto-increment primary key |
+| `parentFen` | `string` | Normalized FEN of the position before the move |
+| `childFen` | `string` | Normalized FEN of the position after the move |
+| `moveSan` | `string` | Standard Algebraic Notation (e.g., `"Nf3"`) |
+| `moveUci` | `string` | UCI notation (e.g., `"g1f3"`) |
+| `color` | `string` | `"white"` or `"black"` — which side plays this move |
+| `reasons` | `object` | Map of line label → reason string. Each line traversing this edge has its own reason for the move. E.g., `{ "Ruy Lopez": "Pin the knight" }`. Empty `{}` if no reasons provided. |
+| `createdAt` | `number` | Unix timestamp (ms) |
+
+**Indexes:**
+- Primary key: `id` (auto-increment, inline)
+- `byParent`: index on `parentFen` — find all moves from a position
+- `byChild`: index on `childFen` — find all moves leading to a position
+- `byParentMove`: unique compound index on `[parentFen, moveSan]` — prevent duplicate edges
+
+### 5.3 Object Store: `lines`
+
+Each line represents a complete opening variation from root to a leaf (or chosen endpoint). Lines are the unit of SM2 scheduling.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | `number` (PK) | Auto-increment primary key |
+| `color` | `string` | The color the user is studying as (`"white"` or `"black"`) |
+| `rootFen` | `string` | FEN of the starting position (usually the standard start position) |
+| `leafFen` | `string` | FEN of the terminal position of this line |
+| `fens` | `string[]` | Ordered array of normalized FENs from root to leaf (the path through the DAG) |
+| `moves` | `string[]` | Ordered array of SAN moves corresponding to each step in `fens` |
+| `label` | `string` | Composite name of the line (e.g., `"Ruy Lopez > Berlin Defense > Rio de Janeiro Variation"`). Derived from the `names` store record for this line. See §7.1. |
+| `easeFactor` | `number` | SM2 ease factor (default `2.5`, minimum `1.3`) |
+| `interval` | `number` | SM2 interval in days (default `0`) |
+| `repetitions` | `number` | SM2 repetition count (default `0`) |
+| `nextReviewDate` | `number` | Unix timestamp (ms) of the next scheduled review (default `0` = immediately due) |
+| `lastReviewDate` | `number \| null` | Unix timestamp (ms) of the last review, or `null` if never reviewed |
+| `createdAt` | `number` | Unix timestamp (ms) |
+
+**Indexes:**
+- Primary key: `id` (auto-increment, inline)
+- `byLeafFen`: index on `leafFen` — find lines ending at a specific position
+- `byNextReview`: index on `nextReviewDate` — efficiently query due lines
+- `byColor`: index on `color` — filter lines by study color
+- `byRootFen`: index on `rootFen` — find lines starting from a given position
+
+### 5.4 Object Store: `settings`
+
+Simple key-value store for user preferences.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `key` | `string` (PK) | Setting name |
+| `value` | `any` | Setting value |
+
+**Known keys:**
+- `boardTheme` — board color theme
+- `pieceSet` — piece set name
+- `practiceDelay` — delay (ms) before auto-playing opponent moves during practice
+- `autoRating` — `boolean` — whether to auto-calculate SM2 quality from accuracy or prompt user
+
+### 5.5 Object Store: `names`
+
+Structured 3-part naming table. Every line gets a record here. Supports cascading dropdown UI (part1 → part2 → part3) and reverse lookups from names back to FENs/lines.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | `number` (PK) | Auto-increment primary key |
+| `lineId` | `number` | Foreign key to the `lines` store |
+| `part1` | `string` | Top-level opening name — first named node walking root → leaf (e.g., `"Ruy Lopez"`) |
+| `part2` | `string` | Variation name — second named node (e.g., `"Berlin Defense"`). Empty string if only one named node. |
+| `part3` | `string` | Sub-variation — remainder: third named node or auto-generated from the divergence point (e.g., `"Rio de Janeiro Variation"`, `"Bc4 variation"`). Empty string if ≤2 named nodes. |
+| `rootFen` | `string` | FEN of the line's root position (denormalized for quick lookup) |
+| `leafFen` | `string` | FEN of the line's leaf position (denormalized) |
+| `sourceFen` | `string` | FEN of the node whose `name` field determined `part1` (reverse mapping) |
+| `createdAt` | `number` | Unix timestamp (ms) |
+
+**Indexes:**
+- Primary key: `id` (auto-increment, inline)
+- `byLineId`: unique index on `lineId` — one name record per line
+- `byPart1`: index on `part1` — first dropdown
+- `byPart1Part2`: compound index on `[part1, part2]` — second dropdown filtered by first
+- `byPart1Part2Part3`: compound index on `[part1, part2, part3]` — third dropdown
+- `bySourceFen`: index on `sourceFen` — find all name records derived from a given node (used for cascade updates)
+
+**ECO alignment:** The 3-part structure naturally maps to how chess openings are classified:
+- Part 1 = Opening family ("Ruy Lopez", "Sicilian Defense", "Queen's Gambit")
+- Part 2 = Variation ("Berlin Defense", "Najdorf Variation", "Declined")
+- Part 3 = Sub-variation or specific line qualifier
+
+---
+
+## 6. FEN Normalization
+
+Chess FEN strings contain six fields:
+
+```
+<pieces> <active-color> <castling> <en-passant> <halfmove-clock> <fullmove-number>
 ```
 
-#### SRS Tables (schema only — not implemented in current scope)
+The last two fields (halfmove clock, fullmove number) are irrelevant for position identity — the same position can be reached at different move numbers. **Normalized FEN strips these two fields.**
 
-These tables are defined now for forward-compatibility. They will be populated
-when the SRS engine is implemented in a future phase.
+### Function: `normalizeFen(fen)`
 
-```sql
-CREATE TABLE users (
-    id              BIGSERIAL PRIMARY KEY,
-    username        TEXT UNIQUE NOT NULL,
-    password_hash   TEXT NOT NULL,
-    target_rating   INTEGER DEFAULT 1200,
-    preferred_color CHAR(1),                    -- 'w', 'b', or NULL for both
-    created_at      TIMESTAMP DEFAULT NOW()
-);
-
--- One SRS record per user per node
-CREATE TABLE node_srs (
-    id                      BIGSERIAL PRIMARY KEY,
-    user_id                 BIGINT NOT NULL REFERENCES users(id),
-    node_id                 BIGINT NOT NULL REFERENCES nodes(id),
-
-    -- SM-2 core fields
-    easiness_factor         FLOAT DEFAULT 2.5,
-    interval_days           INTEGER DEFAULT 1,
-    next_review_date        DATE DEFAULT CURRENT_DATE,
-    last_reviewed           TIMESTAMP,
-
-    -- Performance
-    consecutive_correct     INTEGER DEFAULT 0,
-    total_attempts          INTEGER DEFAULT 0,
-    total_correct           INTEGER DEFAULT 0,
-    mastery_score           FLOAT DEFAULT 0.0,
-
-    -- Weak spot tracking
-    weak_puzzle_types       puzzle_type[],
-    last_mistake_puzzle_id  BIGINT REFERENCES puzzles(id),
-    last_mistake_at         TIMESTAMP,
-
-    -- Difficulty progression
-    max_difficulty_unlocked INTEGER DEFAULT 1,    -- tiers 1–5
-
-    -- Status
-    status                  TEXT DEFAULT 'new',  -- new, learning, reviewing, mastered
-
-    UNIQUE (user_id, node_id)
-);
-
--- Critical indexes for session building
-CREATE INDEX idx_srs_user_review ON node_srs(user_id, next_review_date);
-CREATE INDEX idx_srs_user_status ON node_srs(user_id, status);
-CREATE INDEX idx_srs_user_mistake ON node_srs(user_id, last_mistake_at)
-    WHERE last_mistake_at IS NOT NULL;
-
--- Per-puzzle attempt history
-CREATE TABLE puzzle_attempts (
-    id              BIGSERIAL PRIMARY KEY,
-    user_id         BIGINT NOT NULL REFERENCES users(id),
-    puzzle_id       BIGINT NOT NULL REFERENCES puzzles(id),
-    node_id         BIGINT NOT NULL REFERENCES nodes(id),
-    attempted_at    TIMESTAMP DEFAULT NOW(),
-    answer_given    TEXT,
-    is_correct      BOOLEAN,
-    time_taken_ms   INTEGER,
-    self_rating     INTEGER CHECK (self_rating BETWEEN 1 AND 5)
-);
-
-CREATE INDEX idx_attempts_user_node ON puzzle_attempts(user_id, node_id);
-CREATE INDEX idx_attempts_user_time ON puzzle_attempts(user_id, attempted_at);
-
--- Ripple events
-CREATE TABLE srs_ripple_events (
-    id                  BIGSERIAL PRIMARY KEY,
-    user_id             BIGINT NOT NULL REFERENCES users(id),
-    trigger_node_id     BIGINT NOT NULL REFERENCES nodes(id),
-    affected_node_id    BIGINT NOT NULL REFERENCES nodes(id),
-    relationship        TEXT,                     -- 'parent', 'sibling', 'child'
-    new_review_date     DATE,
-    created_at          TIMESTAMP DEFAULT NOW()
-);
-
-CREATE INDEX idx_ripple_user_time ON srs_ripple_events(user_id, created_at);
+```
+Input:  "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1"
+Output: "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3"
 ```
 
-#### Pipeline Progress Table (new in v2)
+**Implementation:** Split on spaces, take first 4 fields, rejoin with space.
 
-```sql
--- Tracks build pipeline progress for checkpointing and monitoring
-CREATE TABLE pipeline_progress (
-    id              BIGSERIAL PRIMARY KEY,
-    stage           TEXT NOT NULL,              -- 'pgn_parse', 'stockfish', 'llm_reasoning', 'puzzles'
-    node_id         BIGINT REFERENCES nodes(id),
-    edge_id         BIGINT REFERENCES edges(id),
-    status          TEXT NOT NULL,              -- 'pending', 'processing', 'completed', 'failed'
-    error_message   TEXT,
-    started_at      TIMESTAMP,
-    completed_at    TIMESTAMP,
-    retry_count     INTEGER DEFAULT 0
-);
+### Why This Matters
 
-CREATE INDEX idx_pipeline_stage_status ON pipeline_progress(stage, status);
+- Two lines reaching the same position via different move orders will converge on the same DAG node.
+- This is essential for the DAG to function correctly — transpositions are automatically detected and merged.
+- En passant square IS preserved because it affects legal moves from the position.
+- Castling rights ARE preserved because they affect legal moves.
+
+---
+
+## 7. DAG Operations
+
+Module: `dag.js`
+
+### 7.1 `addLine(startingFen, moves[], color, reasons[])`
+
+Inserts a new opening line into the DAG.
+
+**Parameters:**
+- `startingFen` — Full FEN string of the position where the line begins. Normalized internally.
+- `moves[]` — SAN moves from the starting position onward.
+- `color` — `"white"` or `"black"` — the color the user is studying as.
+- `reasons[]` — Parallel array of reason strings for each move.
+
+**Algorithm:**
+
+```
+Phase 1 — Walk moves, collect FENs, upsert nodes:
+
+1. Initialize chess.js: new Chess(startingFen)
+2. previousFen = normalizeFen(startingFen)
+3. Upsert node for previousFen (if not exists)
+4. fens = [previousFen]
+5. Determine activeColor from startingFen's active-color field
+   ('w' → "white", 'b' → "black")
+6. For each move (i = 0..moves.length-1):
+   a. Apply move to chess.js instance
+   b. currentFen = normalizeFen(chess.fen())
+   c. Upsert node for currentFen
+   d. fens.push(currentFen)
+   e. previousFen = currentFen
+
+Phase 2 — Compute line name:
+
+7. { label, part1, part2, part3, sourceFen } =
+     generateLineName(fens, moves, color)
+
+Phase 3 — Upsert edges with tagged reasons:
+
+8. For each move (i = 0..moves.length-1):
+   a. parentFen = fens[i], childFen = fens[i+1]
+   b. sideToMove = (i % 2 == 0) ? activeColor : oppositeColor
+   c. existingEdge = lookup by (parentFen, moves[i])
+      via db.getAllByIndex("edges", "byParentMove", [parentFen, moves[i]])
+   d. If edge exists:
+      - If reasons[i] is non-empty:
+          existingEdge.reasons[label] = reasons[i]
+      - db.put("edges", existingEdge)
+   e. If edge does not exist:
+      - Create edge: { parentFen, childFen, moveSan: moves[i],
+          color: sideToMove,
+          reasons: reasons[i] ? { [label]: reasons[i] } : {},
+          createdAt: now() }
+      - db.add("edges", edge)
+
+Phase 4 — Create line record:
+
+9. lineRecord = {
+     label, color,
+     rootFen: fens[0], leafFen: fens[fens.length-1],
+     fens, moves,
+     easeFactor: 2.5, interval: 0, repetitions: 0,
+     nextReviewDate: 0, lastReviewDate: null,
+     createdAt: now()
+   }
+   lineId = db.add("lines", lineRecord)  // returns auto-generated id
+
+Phase 5 — Create names record:
+
+10. db.add("names", {
+      lineId,
+      part1, part2, part3,
+      rootFen: fens[0],
+      leafFen: fens[fens.length-1],
+      sourceFen,
+      createdAt: now()
+    })
 ```
 
-### 4.2 DAG Builder Pipeline
+**Edge upsert rule:** If an edge with the same `(parentFen, moveSan)` already exists, **merge** the new line's reason into the edge's `reasons` map: `edge.reasons[label] = reasons[i]`. Only add the entry if `reasons[i]` is non-empty. Existing entries for other lines are always preserved.
 
-#### Step 1 — PGN Filtering and Parsing (bug fixed)
+**Branching behavior:** Because we walk the move sequence and upsert at each step, if the first N moves match an existing line, those N nodes/edges are reused. Reasons for shared edges are merged — each line retains its own tagged reason.
 
-```python
-# pipeline/pgn_parser.py
+### 7.2 `getChildren(fen)`
 
-import chess.pgn
-from dataclasses import dataclass
-from typing import Generator
+Returns all edges where `parentFen === fen`. These are the branching moves from this position.
 
-@dataclass
-class MoveRecord:
-    parent_fen: str
-    child_fen: str
-    move_uci: str
-    move_san: str
-    result: str  # '1-0', '0-1', '1/2-1/2'
-
-def filter_game(game: chess.pgn.Game,
-                min_rating: int,
-                max_rating: int,
-                speeds: list[str]) -> bool:
-    """Accept only games matching rating band and time control."""
-    headers = game.headers
-    try:
-        white_elo = int(headers.get("WhiteElo", 0))
-        black_elo = int(headers.get("BlackElo", 0))
-        avg_elo = (white_elo + black_elo) / 2
-        time_control = headers.get("TimeControl", "")
-        speed = classify_speed(time_control)
-        return (min_rating <= avg_elo <= max_rating) and (speed in speeds)
-    except (ValueError, TypeError):
-        return False
-
-def parse_pgn(filepath: str,
-              min_rating: int = 1000,
-              max_rating: int = 1600,
-              speeds: list[str] = ["blitz", "rapid"],
-              max_depth: int = 25) -> Generator[MoveRecord, None, None]:
-    """Stream move records from PGN file."""
-    with open(filepath) as f:
-        while True:
-            game = chess.pgn.read_game(f)
-            if game is None:
-                break
-            if not filter_game(game, min_rating, max_rating, speeds):
-                continue
-
-            board = game.board()
-            result = game.headers.get("Result", "*")
-            depth = 0
-
-            for move in game.mainline_moves():
-                if depth >= max_depth:
-                    break
-                parent_fen = normalize_fen(board.fen())
-
-                # FIX: Generate SAN BEFORE pushing the move
-                move_san = board.san(move)
-
-                board.push(move)
-                child_fen = normalize_fen(board.fen())
-
-                yield MoveRecord(
-                    parent_fen=parent_fen,
-                    child_fen=child_fen,
-                    move_uci=move.uci(),
-                    move_san=move_san,
-                    result=result
-                )
-                depth += 1
-
-def normalize_fen(fen: str) -> str:
-    """Strip move counters from FEN — only position matters for identity."""
-    parts = fen.split()
-    return " ".join(parts[:4])  # piece placement, turn, castling, en passant only
+```
+Result: [{ childFen, moveSan, moveUci, color, reasons }, ...]
 ```
 
-#### Step 2 — Streaming Aggregation (memory-bounded)
+### 7.3 `_getSubtree(fen)` *(private helper)*
 
-```python
-# pipeline/aggregator.py
+BFS/DFS traversal starting from `fen`. Returns all reachable nodes, edges, and the set of reachable FENs. **Not exported** — used internally by `getLinesBySubtree`, `getLinesFromNode`, and `deleteSubtree`.
 
-import structlog
-from collections import defaultdict
-from contextlib import contextmanager
+```
+Algorithm:
+1. queue = [fen]
+2. visited = Set()
+3. nodes = [], edges = []
+4. While queue not empty:
+   a. current = queue.dequeue()
+   b. If current in visited, skip
+   c. visited.add(current)
+   d. node = db.get("nodes", current)
+   e. nodes.push(node)
+   f. children = getChildren(current)
+   g. For each child edge:
+      - edges.push(edge)
+      - queue.enqueue(edge.childFen)
+5. Return { nodes, edges, fens: visited }
+```
 
-log = structlog.get_logger()
+### 7.4 `getFullName(fen)`
 
-class StreamingAggregator:
-    """
-    Aggregates move counts with bounded memory.
-    Flushes to DB when the dict reaches max_positions entries,
-    using UPSERT to merge with previously flushed data.
-    """
+Returns the full hierarchical name of a node by walking up the DAG to the root. Every node contributes to the name: named nodes contribute their `name`, unnamed nodes contribute the `moveSan` of the edge that leads to them.
 
-    def __init__(self, db_connection, max_positions: int = 100_000):
-        self.db = db_connection
-        self.max_positions = max_positions
-        # {parent_fen: {move_uci: {total, white_wins, black_wins, draws, child_fen, move_san}}}
-        self.counts = defaultdict(lambda: defaultdict(lambda: {
-            "total": 0, "white_wins": 0, "black_wins": 0, "draws": 0,
-            "child_fen": None, "move_san": None
-        }))
-        self.position_count = 0
-        self.total_records = 0
-        self.flush_count = 0
+```
+Algorithm:
+1. segments = []
+2. current = fen
+3. While current has parent(s):
+   a. node = db.get("nodes", current)
+   b. parentEdges = db.getAllByIndex("edges", "byChild", current)
+   c. If multiple parents, pick the one on the "primary line"
+      (the line with the earliest createdAt, or the first-inserted edge)
+   d. If node.name is not null:
+        prepend node.name to segments
+      Else:
+        prepend parentEdge.moveSan to segments
+        (unnamed nodes are represented by the move leading to them)
+   e. current = parentEdge.parentFen
+4. Root node: if it has a name, prepend it
+5. Return segments.join(" > ")
+```
 
-    def add(self, record):
-        entry = self.counts[record.parent_fen][record.move_uci]
-        if entry["total"] == 0:
-            self.position_count += 1
-        entry["total"] += 1
-        entry["child_fen"] = record.child_fen
-        entry["move_san"] = record.move_san
-        if record.result == "1-0":
-            entry["white_wins"] += 1
-        elif record.result == "0-1":
-            entry["black_wins"] += 1
+**Examples:**
+- `"Ruy Lopez > Berlin Defense > Rio de Janeiro Variation"` — all nodes have user-assigned names.
+- `"Ruy Lopez > a6 > Ba4"` — mixed: "Ruy Lopez" is named, the rest are unnamed and shown as moves.
+
+### 7.5 `getRoots()`
+
+Returns all nodes that have no incoming edges (i.e., no edge has them as `childFen`). In most cases this is just the standard starting position.
+
+### 7.6 `getLinesBySubtree(fen)`
+
+Returns all `lines` records that overlap with the subtree rooted at `fen`. A line is included if **any** of its `fens[]` entries fall within the subtree — this correctly captures lines whose `startingFen` is deeper than the given node.
+
+```
+Algorithm:
+1. subtree = _getSubtree(fen)
+2. reachableFens = subtree.fens   // Set of all FENs in the subtree
+3. allLines = db.getAll("lines")
+4. Return allLines.filter(line =>
+     line.fens.some(f => reachableFens.has(f))
+   )
+```
+
+**Why not `fens.includes(fen)`?** A line may start below the queried node (e.g., user marked a deeper `startingFen`). Its `fens[]` would not contain the queried node's FEN, but it is logically part of that variation's subtree.
+
+**Optimization note:** For large repertoires, consider an inverted index (FEN → line IDs). For the expected scale (hundreds of lines), a full scan is acceptable.
+
+### 7.7 `getLinesFromNode(fen)`
+
+Returns all `lines` records that overlap with the subtree rooted at `fen`, AND where that overlap is not only at the leaf (i.e., lines that pass through or start within the subtree and continue beyond it). Same subtree-aware logic as `getLinesBySubtree`, but excludes lines whose only intersection with the subtree is their `leafFen`.
+
+### 7.8 `deleteLine(lineId)`
+
+Deletes a line record, its name record, cleans up tagged reasons, and garbage-collects orphaned nodes/edges:
+
+```
+Algorithm:
+1. Read the line record (need label, fens, moves for cleanup)
+2. Delete the line record
+3. Delete the corresponding names record:
+   nameRec = db.getAllByIndex("names", "byLineId", lineId)[0]
+   db.del("names", nameRec.id)
+4. For each edge along the deleted line's path:
+   a. Check if any other line still traverses this edge
+   b. If yes (shared edge):
+      - Remove the deleted line's reason entry:
+        delete edge.reasons[deletedLine.label]
+      - db.put("edges", edge)
+   c. If no other line uses this edge: delete the edge entirely
+5. For each FEN in the deleted line's fens[]:
+   a. Check if any other line still references this FEN
+   b. If not, check if any edge still references this FEN as parent or child
+   c. If fully orphaned, delete the node
+```
+
+### 7.9 `deleteSubtree(fen)`
+
+Deletes all nodes, edges, and lines within the subtree rooted at `fen`.
+
+```
+Algorithm:
+1. subtree = _getSubtree(fen)
+2. For each line that passes through any node in subtree, delete it
+3. Delete all edges in subtree
+4. Delete all nodes in subtree
+5. Delete incoming edges TO the root of the subtree (edges where childFen === fen)
+```
+
+### 7.10 `generateLineName(fens, moves, color)`
+
+Computes the structured 3-part name for a line by walking its FENs pool for named nodes and determining auto-generated suffixes from divergence points.
+
+```
+Algorithm:
+1. Walk fens[], collect named nodes in order:
+   namedNodes = []
+   for each fen in fens:
+     node = db.get("nodes", fen)
+     if node.name is non-empty:
+       namedNodes.push({ name: node.name, fen: node.fen, index: i })
+
+2. Determine the divergence point (for auto-generation):
+   allLines = db.getAll("lines")
+   otherFens = Set of all FENs across all existing lines' fens[]
+   firstUniqueIndex = fens.findIndex(fen => !otherFens.has(fen))
+
+3. Build auto-suffix from divergence (if needed):
+   autoSuffix = ""
+   if firstUniqueIndex >= 1:
+     moveSan = moves[firstUniqueIndex - 1]
+     activeColor = parse from fens[0]'s active-color field
+     sideOfMove = (firstUniqueIndex-1) % 2 == 0 ? activeColor : opposite
+     if sideOfMove === color:
+       autoSuffix = moveSan + " variation"
+     else:
+       autoSuffix = "respond to " + moveSan
+
+4. Assign parts:
+   if namedNodes.length >= 3:
+     part1 = namedNodes[0].name
+     part2 = namedNodes[1].name
+     part3 = namedNodes[2].name
+     sourceFen = namedNodes[0].fen
+   else if namedNodes.length == 2:
+     part1 = namedNodes[0].name
+     part2 = namedNodes[1].name
+     part3 = autoSuffix || ""
+     sourceFen = namedNodes[0].fen
+   else if namedNodes.length == 1:
+     part1 = namedNodes[0].name
+     part2 = ""
+     part3 = autoSuffix || ""
+     sourceFen = namedNodes[0].fen
+   else:  // 0 named nodes
+     firstMove = moves[0] || "?"
+     part1 = "1." + firstMove + " lines"
+     part2 = ""
+     part3 = autoSuffix || ""
+     sourceFen = fens[0]
+
+5. Compose label:
+   label = [part1, part2, part3].filter(Boolean).join(" > ")
+
+6. Return { label, part1, part2, part3, sourceFen }
+```
+
+### 7.11 `getLinesByName(part1, part2?, part3?)`
+
+Query the `names` store by structured name parts. Supports progressive filtering for the 3-dropdown UI.
+
+```
+Algorithm:
+- If only part1 provided:
+    records = db.getAllByIndex("names", "byPart1", part1)
+- If part1 + part2:
+    records = db.getAllByIndex("names", "byPart1Part2", [part1, part2])
+- If part1 + part2 + part3:
+    records = db.getAllByIndex("names", "byPart1Part2Part3", [part1, part2, part3])
+- lineIds = records.map(r => r.lineId)
+- Return Promise.all(lineIds.map(id => db.get("lines", id)))
+```
+
+### 7.12 `getDistinctNames(part1?, part2?)`
+
+Returns the distinct values for the next dropdown level.
+
+```
+Algorithm:
+- If no arguments:
+    all = db.getAll("names")
+    Return [...new Set(all.map(r => r.part1))].sort()
+- If part1 provided:
+    records = db.getAllByIndex("names", "byPart1", part1)
+    Return [...new Set(records.map(r => r.part2).filter(Boolean))].sort()
+- If part1 + part2:
+    records = db.getAllByIndex("names", "byPart1Part2", [part1, part2])
+    Return [...new Set(records.map(r => r.part3).filter(Boolean))].sort()
+```
+
+### 7.13 `renameNode(fen, newName)`
+
+Renames a node and cascades the change to all affected name records and line labels.
+
+```
+Algorithm:
+1. node = db.get("nodes", fen)
+2. oldName = node.name
+3. node.name = newName
+4. db.put("nodes", node)
+
+5. Find all lines that pass through this FEN:
+   allLines = db.getAll("lines")
+   affectedLines = allLines.filter(line => line.fens.includes(fen))
+
+6. For each affected line:
+   a. Recompute name:
+      { label, part1, part2, part3, sourceFen } =
+        generateLineName(line.fens, line.moves, line.color)
+   b. If label !== line.label:
+      - Update edge reason keys:
+        For each edge along the line's path:
+          if edge.reasons[oldLabel] exists:
+            edge.reasons[label] = edge.reasons[oldLabel]
+            delete edge.reasons[oldLabel]
+            db.put("edges", edge)
+      - Update line: line.label = label; db.put("lines", line)
+   c. Update names record:
+      nameRec = db.getAllByIndex("names", "byLineId", line.id)[0]
+      nameRec.part1 = part1; nameRec.part2 = part2; nameRec.part3 = part3
+      nameRec.sourceFen = sourceFen
+      db.put("names", nameRec)
+```
+
+---
+
+## 8. SM2 Spaced Repetition
+
+Module: `sm2.js`
+
+### 8.1 Algorithm
+
+Standard SM2 (SuperMemo 2) implementation. Each `line` record carries SM2 state.
+
+**Inputs:**
+- `quality` — integer 0–5 representing recall quality
+
+**Quality scale:**
+
+| Grade | Meaning | Trigger |
+|-------|---------|---------|
+| 5 | Perfect — instant recall, no mistakes | All moves correct, no hesitation |
+| 4 | Correct with hesitation | All moves correct, but took time |
+| 3 | Correct with difficulty | Minor mistakes, self-corrected |
+| 2 | Wrong but recognized the right answer | Made errors, recognized correct move when shown |
+| 1 | Wrong — vaguely familiar | Failed most moves, slight recognition |
+| 0 | Blackout — no recall | Total failure |
+
+**Update algorithm:**
+
+```
+function sm2Update(item, quality):
+    if quality >= 3:
+        // Correct response
+        if item.repetitions == 0:
+            item.interval = 1
+        else if item.repetitions == 1:
+            item.interval = 6
         else:
-            entry["draws"] += 1
+            item.interval = Math.round(item.interval * item.easeFactor)
+        item.repetitions += 1
+    else:
+        // Incorrect response — reset
+        item.repetitions = 0
+        item.interval = 1
 
-        self.total_records += 1
+    // Update ease factor
+    item.easeFactor = item.easeFactor +
+        (0.1 - (5 - quality) * (0.08 + (5 - quality) * 0.02))
+    item.easeFactor = Math.max(1.3, item.easeFactor)
 
-        # Flush when we hit the position cap (not record cap)
-        if self.position_count >= self.max_positions:
-            self.flush()
+    // Schedule next review
+    item.nextReviewDate = Date.now() + (item.interval * 24 * 60 * 60 * 1000)
+    item.lastReviewDate = Date.now()
 
-    def flush(self):
-        """UPSERT current counts to DB and free memory."""
-        if not self.counts:
-            return
-        self.flush_count += 1
-        log.info("flushing_aggregator",
-                 positions=self.position_count,
-                 total_records=self.total_records,
-                 flush_number=self.flush_count)
-        self._upsert_to_db()
-        self.counts.clear()
-        self.position_count = 0
-
-    def _upsert_to_db(self):
-        """
-        Bulk UPSERT into a staging table, then merge.
-        Uses ON CONFLICT ... DO UPDATE to accumulate counts
-        across multiple flushes.
-        """
-        with self.db.cursor() as cur:
-            for parent_fen, moves in self.counts.items():
-                # Ensure parent node exists
-                cur.execute("""
-                    INSERT INTO nodes (fen, total_games, first_seen)
-                    VALUES (%s, 0, CURRENT_DATE)
-                    ON CONFLICT (fen) DO NOTHING
-                """, (parent_fen,))
-
-                for move_uci, stats in moves.items():
-                    # Ensure child node exists
-                    cur.execute("""
-                        INSERT INTO nodes (fen, total_games, first_seen)
-                        VALUES (%s, 0, CURRENT_DATE)
-                        ON CONFLICT (fen) DO NOTHING
-                    """, (stats["child_fen"],))
-
-                    # Accumulate edge counts
-                    cur.execute("""
-                        INSERT INTO edges_staging
-                            (parent_fen, child_fen, move_uci, move_san,
-                             total, white_wins, black_wins, draws)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                        ON CONFLICT (parent_fen, move_uci) DO UPDATE SET
-                            total = edges_staging.total + EXCLUDED.total,
-                            white_wins = edges_staging.white_wins + EXCLUDED.white_wins,
-                            black_wins = edges_staging.black_wins + EXCLUDED.black_wins,
-                            draws = edges_staging.draws + EXCLUDED.draws
-                    """, (parent_fen, stats["child_fen"], move_uci, stats["move_san"],
-                          stats["total"], stats["white_wins"], stats["black_wins"], stats["draws"]))
-            self.db.commit()
-
-    def build_dag(self, threshold: float = 0.10):
-        """
-        After all PGN data is flushed, apply 10% filter from staging to edges.
-        Runs as a single SQL operation for efficiency.
-        """
-        self.flush()  # ensure everything is in DB
-        with self.db.cursor() as cur:
-            # Compute frequencies and filter
-            cur.execute("""
-                WITH parent_totals AS (
-                    SELECT parent_fen, SUM(total) AS parent_total
-                    FROM edges_staging
-                    GROUP BY parent_fen
-                )
-                INSERT INTO edges (parent_node_id, child_node_id, move_san, move_uci,
-                                   frequency, is_main_line)
-                SELECT
-                    pn.id, cn.id, es.move_san, es.move_uci,
-                    es.total::FLOAT / pt.parent_total AS frequency,
-                    (es.total = MAX(es.total) OVER (PARTITION BY es.parent_fen))
-                FROM edges_staging es
-                JOIN parent_totals pt ON es.parent_fen = pt.parent_fen
-                JOIN nodes pn ON pn.fen = es.parent_fen
-                JOIN nodes cn ON cn.fen = es.child_fen
-                WHERE es.total::FLOAT / pt.parent_total >= %s
-            """, (threshold,))
-            self.db.commit()
-            log.info("dag_built", threshold=threshold)
+    return item
 ```
 
-#### Step 3 — Stockfish Anti-move Detection (fixed eval + parallelization)
+### 8.2 `getDueLines(subtreeFen?, color?)`
 
-```python
-# pipeline/engine_tagger.py
+Query lines that are due for review.
 
-import chess
-from stockfish import Stockfish
-from concurrent.futures import ProcessPoolExecutor
-import structlog
+```
+Algorithm:
+1. Query `lines` store using `byNextReview` index: nextReviewDate <= Date.now()
+2. If subtreeFen is specified, filter to lines whose fens[] includes subtreeFen
+3. If color is specified, filter by color
+4. Sort by most overdue first (lowest nextReviewDate)
+5. Return results
+```
 
-log = structlog.get_logger()
+### 8.3 `gradeLine(lineId, quality)`
 
-class AntiMoveTagger:
+Apply SM2 update to a line.
 
-    def __init__(self, stockfish_path: str, depth: int = 18,
-                 eval_drop_threshold: int = 50):
-        self.stockfish_path = stockfish_path
-        self.depth = depth
-        self.eval_drop_threshold = eval_drop_threshold  # centipawns
+```
+Algorithm:
+1. line = db.get("lines", lineId)
+2. line = sm2Update(line, quality)
+3. db.put("lines", line)
+```
 
-    def _create_engine(self) -> Stockfish:
-        """Create a fresh Stockfish instance (needed for multiprocessing)."""
-        return Stockfish(path=self.stockfish_path, depth=self.depth)
+### 8.4 Auto-Quality Calculation
 
-    def evaluate_position(self, engine: Stockfish, fen: str) -> float | None:
-        """Returns centipawn evaluation from WHITE's perspective (Stockfish default)."""
-        engine.set_fen_position(fen)
-        eval_data = engine.get_evaluation()
-        if eval_data["type"] == "cp":
-            return eval_data["value"]
-        # Mate scores: treat as large centipawn value
-        if eval_data["type"] == "mate":
-            return 10000 if eval_data["value"] > 0 else -10000
-        return None
+When the `autoRating` setting is enabled, quality is automatically calculated from the practice session accuracy:
 
-    def tag_edge(self, parent_fen: str, move_uci: str, child_fen: str) -> dict:
-        """
-        Evaluate a move and return tagging decision.
+```
+function autoQuality(totalMoves, correctMoves, hintUsed):
+    accuracy = correctMoves / totalMoves
+    if accuracy == 1.0 and not hintUsed:
+        return 5
+    else if accuracy == 1.0 and hintUsed:
+        return 4
+    else if accuracy >= 0.8:
+        return 3
+    else if accuracy >= 0.5:
+        return 2
+    else if accuracy >= 0.2:
+        return 1
+    else:
+        return 0
+```
 
-        FIX: Stockfish always reports from White's perspective.
-        We convert to mover's perspective for eval_drop calculation.
-        - eval_before: position eval from mover's perspective
-        - eval_after: position eval from mover's perspective (after their move)
-        """
-        engine = self._create_engine()
+---
 
-        raw_eval_before = self.evaluate_position(engine, parent_fen)
-        raw_eval_after = self.evaluate_position(engine, child_fen)
+## 9. Practice Engine — Pivot & Prompt Logic
 
-        if raw_eval_before is None or raw_eval_after is None:
-            return {"is_anti_move": False, "eval_drop": None,
-                    "eval_before": None, "eval_after": None}
+This is the core innovation of the system. During practice, the user is tested on opening lines, but the system is aware of the full DAG context — not just the specific line being drilled.
 
-        board = chess.Board(parent_fen)
-        mover_is_white = board.turn == chess.WHITE
+### 9.1 Core Practice Flow
 
-        # Convert both evals to mover's perspective
-        eval_before = raw_eval_before if mover_is_white else -raw_eval_before
-        eval_after = raw_eval_after if mover_is_white else -raw_eval_after
+```
+Given: A line L to practice (selected by SM2 scheduler or user)
+       User's color C (from line record)
 
-        # After the move, it's the opponent's turn, so the position eval
-        # from Stockfish is from the opponent's view. Negate to get mover's view.
-        eval_after = -eval_after
+1. Set board to L.rootFen, oriented to color C
+2. moveIndex = 0
+3. While moveIndex < L.moves.length:
+   a. currentFen = L.fens[moveIndex]
+   b. expectedMove = L.moves[moveIndex]
+   c. Determine who moves: sideToMove = (moveIndex % 2 == 0) ? "white" : "black"
 
-        eval_drop = eval_before - eval_after
-        is_anti_move = eval_drop > self.eval_drop_threshold
+   d. If sideToMove != C:
+      // OPPONENT'S MOVE — auto-play
+      - Wait `practiceDelay` ms
+      - Play expectedMove on the board automatically
+      - Show reason (if any) in sidebar
+      - moveIndex += 1
+      - Continue
 
-        return {
-            "is_anti_move": is_anti_move,
-            "eval_before": eval_before,
-            "eval_after": eval_after,
-            "eval_drop": eval_drop
-        }
+   e. If sideToMove == C:
+      // USER'S MOVE — wait for input
+      - Wait for user to make a move on the board
+      - userMove = the move the user played (in SAN)
+      - Evaluate the move (see §9.2)
+```
 
-    def tag_all_edges(self, db, batch_size: int = 100, workers: int = 4):
-        """
-        Process all untagged edges in batches with parallel workers.
-        Checkpoints after each batch so crashes don't lose all progress.
-        """
-        while True:
-            edges = db.get_untagged_edges(limit=batch_size)
-            if not edges:
-                break
+### 9.2 Move Evaluation — The Pivot Decision Tree
 
-            results = []
-            with ProcessPoolExecutor(max_workers=workers) as pool:
-                futures = {
-                    pool.submit(self.tag_edge, e["parent_fen"], e["move_uci"], e["child_fen"]): e
-                    for e in edges
+When the user plays a move during practice, it is evaluated against the DAG, not just the current line.
+
+```
+Given: currentFen, userMove (SAN), expectedLine L, moveIndex
+
+1. EXACT MATCH — userMove == L.moves[moveIndex]
+   → Mark as CORRECT
+   → Show reason from the edge
+   → moveIndex += 1, continue the line
+
+2. DAG MATCH — userMove != L.moves[moveIndex], BUT there exists an edge
+   in the DAG from currentFen with moveSan == userMove
+   → This means the user played a move belonging to a DIFFERENT line
+   → Execute PIVOT LOGIC (see §9.3)
+
+3. NO MATCH — userMove is a legal chess move but not in the DAG at all
+   → Mark as INCORRECT
+   → Highlight the expected move(s) on the board
+   → Show the reason for the expected move
+   → Record the error
+   → Optionally: allow retry or auto-advance
+
+4. ILLEGAL MOVE — chess.js rejects the move
+   → Chessground won't allow it (prevented at board level)
+```
+
+### 9.3 Pivot Logic — Handling Alternative Lines
+
+When the user plays a move that matches a different line in the DAG (case 2 above), the system must decide what to do. This is the **pivot & prompt** mechanism.
+
+**Key insight:** The current line is already *due* — that's why the user is practicing it. So the current line's mastery status is irrelevant to the pivot decision. The only question is whether the **alternative line** the user's move belongs to is mastered or not.
+
+```
+Given: currentFen, userMove (matches edge E to childFen F),
+       currentLine L (the line being practiced)
+
+Step 1: Find alternative lines
+   alternativeLines = all lines in `lines` store where:
+     - fens[] contains currentFen
+     - The move AFTER currentFen in the line's move sequence == userMove
+     - line.id != L.id
+
+Step 2: If no alternative lines found
+   (Edge exists in DAG but no complete line passes through it)
+   → Treat as CORRECT (the move is in the user's repertoire)
+   → Show message: "Valid move, but no complete line continues from here."
+   → Undo the move, replay from currentFen, prompt for the expected move
+
+Step 3: If alternative lines found, check alternative line mastery
+
+   altLineMastered = (A.repetitions >= 3 AND A.easeFactor >= 2.0)
+   // If multiple alt lines, pick the best candidate first (see §9.4 selection)
+
+   Case A — Alternative line IS mastered:
+     → The user already knows this variation well.
+     → Inform the user: "This variation ({alt line name}) is already mastered."
+     → Undo the user's move on the board.
+     → Prompt the user to think about the correct move for the current line.
+     → Do NOT pivot; continue practicing the current (due) line.
+
+   Case B — Alternative line is NOT mastered:
+     → Silently pivot to the alternative line.
+     → The user's move is accepted as CORRECT.
+     → Continue the practice session along the alternative line.
+     → Credit practice to the alternative line (see §9.4 for execution details).
+```
+
+### 9.4 Pivot Execution
+
+When a silent pivot occurs (Case B above):
+
+```
+Algorithm:
+1. Mark the user's move as CORRECT (it IS in the repertoire)
+2. Select the best alternative line to pivot to:
+   - Prefer the most overdue line
+   - If multiple equally overdue, prefer the one with the lowest easeFactor
+     (hardest for the user)
+   - If still tied, pick the longest line (more practice value)
+3. pivotLine = selected alternative line
+4. Find the moveIndex in pivotLine.fens[] that corresponds to the NEXT position
+   (the childFen after the user's move)
+5. Continue the practice session using pivotLine from that moveIndex onward
+6. At the end of the session:
+   - The ORIGINAL line L is NOT updated — it stays untouched
+     (it will remain due and be presented again in a future session)
+   - Grade ONLY the PIVOT line for the full set of moves the user played on it
+     - Full SM2 update based on accuracy in the pivoted segment
+```
+
+### 9.5 Prompt UI
+
+When the user plays a move matching a **mastered** alternative line (§9.3, Case A), the system informs them and redirects back to the current line:
+
+```
+┌──────────────────────────────────────────────┐
+│  ℹ️  Already Mastered                        │
+│                                               │
+│  You played: Nf3 (Italian Game)              │
+│  But this variation is already mastered.      │
+│                                               │
+│  Think about the correct move for the         │
+│  current line (Ruy Lopez).                    │
+│                                               │
+│  [The move is undone automatically]           │
+│                                               │
+└──────────────────────────────────────────────┘
+```
+
+When the alternative line is **not mastered** (§9.3, Case B), no prompt is shown — the pivot happens silently.
+
+### 9.6 Edge Cases in Practice
+
+| Scenario | Behavior |
+|----------|----------|
+| User plays a move not in DAG but it's a known good move | Mark incorrect — only repertoire moves are accepted. The system drills what the user has studied. |
+| Multiple alternative lines branch from the same move | Pick the best candidate per §9.4 selection criteria. If the selected alt line is mastered, inform and undo; if not, silently pivot. |
+| User pivots, then plays another move matching yet another line | Allow chained pivots — the practice engine always evaluates against the full DAG |
+| The pivot line has already been reviewed today | Still allow pivot, but SM2 update uses the new session's quality |
+| Line has only opponent moves left after pivot point | Auto-play remaining moves, mark as complete |
+| Alt line is mastered and move is undone | The user is expected to play the correct move for the current (due) line. If they play the same alt move again, show the same mastered message and undo again. |
+
+### 9.7 Line Result Screen
+
+Shown at the end of each completed line (or pivoted line):
+
+```
+┌──────────────────────────────────────────────┐
+│                                               │
+│  Line: Ruy Lopez > Berlin Defense             │
+│                                               │
+│  Score: 83%                                   │
+│  (5 / 6 moves correct)                        │
+│                                               │
+│  ┌────────────┐   ┌────────────────┐          │
+│  │ Next Line  │   │ End Practice   │          │
+│  └────────────┘   └────────────────┘          │
+│                                               │
+└──────────────────────────────────────────────┘
+```
+
+- **Score** = `Math.round((correctMoves / totalMoves) * 100)` displayed as a percentage.
+- **Next Line** → picks the next due line via `sm2.getDueLines()` and starts a new drill. If no more lines are due, goes directly to the session summary (§9.8).
+- **End Practice** → stops the session immediately and shows the session summary (§9.8).
+
+### 9.8 Practice Session Summary
+
+After all lines in a practice session are completed:
+
+```
+┌──────────────────────────────────────────────┐
+│  📊 Practice Summary                         │
+│                                               │
+│  Lines reviewed: 8                            │
+│  Pivots taken: 2                              │
+│  Overall accuracy: 85%                        │
+│                                               │
+│  Line Results:                                │
+│  ✓ Ruy Lopez > Berlin         — Grade 5 (↑)  │
+│  ✓ Italian Game > Giuoco      — Grade 4 (↑)  │
+│  ✗ Sicilian > Najdorf         — Grade 2 (↓)  │
+│  ...                                          │
+│                                               │
+│  Next reviews:                                │
+│  • Sicilian > Najdorf: tomorrow               │
+│  • Italian Game > Evans: in 3 days            │
+│  • Ruy Lopez > Berlin: in 12 days             │
+│                                               │
+│  ┌──────────────┐                             │
+│  │ Practice More │                            │
+│  └──────────────┘                             │
+└──────────────────────────────────────────────┘
+```
+
+---
+
+## 10. Pages
+
+### 10.1 Study Page (`pages/study.js`)
+
+The feed-in page where the user records new opening lines.
+
+**Layout:**
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  ┌──────────────────────┐   ┌──────────────────────────────┐   │
+│  │                      │   │  Color: ○ White  ● Black     │   │
+│  │                      │   │                              │   │
+│  │     Chessground       │   │  Move List:                  │   │
+│  │       Board           │   │  (moves before start pos     │   │
+│  │                      │   │   shown greyed out)           │   │
+│  │                      │   │  1. e4    e5                  │   │
+│  │                      │   │  2. Nf3   Nc6                │   │
+│  │                      │   │  ── Start Position ──        │   │
+│  │                      │   │  3. Bb5   (reason: ...)  ✎  │   │
+│  └──────────────────────┘   │     a6    (reason: ...)  ✎  │   │
+│                              │  4. Ba4   (reason: ...)  ✎  │   │
+│  ┌──────┐ ┌──────┐          │                              │   │
+│  │ Undo │ │ Redo │          │  ┌─────────────────────────┐ │   │
+│  └──────┘ └──────┘          │  │ Reason for current move │ │   │
+│                              │  │ [text input area       ]│ │   │
+│  ┌──────────────────────┐   │  └─────────────────────────┘ │   │
+│  │ Mark Starting Pos.   │   │                              │   │
+│  └──────────────────────┘   │  ┌──────────┐ ┌───────────┐ │   │
+│                              │  │ Save Line│ │ Clear     │ │   │
+│  Status: "Starting pos.      │  └──────────┘ └───────────┘ │   │
+│  set at move 2 (after Nc6)" │                              │   │
+│                              └──────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Behavior:**
+
+1. User selects their study color (White or Black). Board orientation adjusts.
+2. User makes moves for BOTH sides on the board — each move appears in the Move List on the right.
+3. After each move (after the starting position), a text input appears for the user to type the reason for that move. Reason can be left empty.
+4. The ✎ (edit) button next to each move allows editing the reason retroactively.
+5. Undo/Redo buttons (and keyboard shortcuts: Ctrl+Z / Ctrl+Y) navigate the move stack.
+6. **Mark Starting Position:** Captures the current board position as the root of the line.
+   - Default: the standard chess starting position.
+   - The user can make a sequence of moves to reach a desired position, then click "Mark Starting Position".
+   - Moves before the marked position are "setup moves" — shown greyed out, separated by a `── Start Position ──` divider.
+   - The button can be clicked again to re-mark a different starting position.
+   - Undoing past the starting position reverts to the standard starting position.
+   - Cannot mark starting position if there are already active moves with reasons entered.
+7. **Branch detection:** After each move, the system checks if the current FEN exists in the DAG.
+   - If yes, and there are edges from it: show "Position exists in repertoire. Existing moves: Bb5 (Ruy Lopez), Bc4 (Italian)."
+   - If the user plays a new move not in the DAG from an existing position: show "New branch from existing position."
+8. **Save Line:** Calls `dag.addLine(startingFen, moves, color, reasons)` — where `startingFen` is the marked starting position and `moves`/`reasons` are only the active moves (after the starting position). Shows confirmation. Resets the board.
+9. **Validation:** Cannot save an empty line (no active moves after starting position). Warn if saving a line identical to an existing one.
+
+### 10.2 Browse Page (`pages/browse.js`)
+
+Explore the full repertoire DAG as an expandable tree.
+
+**Layout:**
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  ┌─────────────────────────────┐  ┌──────────────────────────┐  │
+│  │  Repertoire Tree            │  │  Position Detail         │  │
+│  │                             │  │                          │  │
+│  │  ▼ Start Position           │  │  ┌────────────────────┐  │  │
+│  │    ▼ 1. e4                  │  │  │   Mini-board       │  │  │
+│  │      ▼ 1...e5               │  │  │   (chessground)    │  │  │
+│  │        ► 2. Nf3             │  │  └────────────────────┘  │  │
+│  │          ▼ 2...Nc6          │  │                          │  │
+│  │            ► 3. Bb5 "Ruy.." │  │  Name: [Berlin Defense]  │  │
+│  │            ► 3. Bc4 "Ital." │  │  Full: Ruy Lopez >       │  │
+│  │        ► 2. d4              │  │        Berlin Defense    │  │
+│  │      ►  1...c5 (Sicilian)   │  │                          │  │
+│  │    ► 1. d4                  │  │  Notes: [text area]      │  │
+│  │                             │  │                          │  │
+│  │                             │  │  Reason for arriving     │  │
+│  │                             │  │  move: "Controls center" │  │
+│  │                             │  │                          │  │
+│  │                             │  │  Lines through here: 4   │  │
+│  │                             │  │  Children: 2 moves       │  │
+│  │                             │  │                          │  │
+│  │                             │  │  ┌─────────┐ ┌────────┐ │  │
+│  │                             │  │  │Practice │ │ Delete │ │  │
+│  │                             │  │  │Subtree  │ │Subtree │ │  │
+│  │                             │  │  └─────────┘ └────────┘ │  │
+│  └─────────────────────────────┘  └──────────────────────────┘  │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+**Behavior:**
+
+1. **Tree rendering:** DAG is rendered as an expandable/collapsible tree. Each node shows the move SAN and name (if set).
+2. **Node selection:** Clicking a node in the tree populates the right panel with:
+   - A mini chessground board showing the position
+   - Editable name field (inline save on blur or Enter)
+   - Full name (auto-computed from ancestors)
+   - Editable notes field
+   - The reason text from the edge that led to this node
+   - Count of lines passing through this node and number of child branches
+3. **Practice Subtree** button: navigates to `#/practice?fen=<selected-fen>` to scope practice to this subtree
+4. **Delete Subtree** button: confirmation dialog, then calls `dag.deleteSubtree(fen)`
+5. **Color coding:** Edges played by White shown in one color, Black in another (visual distinction in the tree)
+6. **Search:** A search/filter input at the top of the tree to find nodes by name
+
+### 10.3 Practice Page (`pages/practice.js`)
+
+SM2-driven quiz page with the pivot logic described in §9.
+
+**Layout:**
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  Scope: [All Lines ▾]   Due: 5 lines   Color: White             │
+│                                                                   │
+│  ┌──────────────────────┐   ┌──────────────────────────────┐     │
+│  │                      │   │  Current Line:                │     │
+│  │                      │   │  Ruy Lopez > Berlin Defense   │     │
+│  │     Chessground       │   │                              │     │
+│  │       Board           │   │  Progress: ████░░░ 4/7 moves │     │
+│  │                      │   │                              │     │
+│  │                      │   │  Last move reason:            │     │
+│  │                      │   │  "Develop knight to natural   │     │
+│  │                      │   │   square, attack e5 pawn"    │     │
+│  └──────────────────────┘   │                              │     │
+│                              │  Status: Your move (White)   │     │
+│  ┌────────────────────────┐ │                              │     │
+│  │ Hint: show next move   │ │  ┌────────┐                 │     │
+│  └────────────────────────┘ │  │ Skip   │                 │     │
+│                              │  └────────┘                 │     │
+│                              └──────────────────────────────┘     │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+**Behavior:**
+
+1. **Scope selection:** Dropdown to choose scope — "All Lines", or any named node/subtree from the Browse page. URL parameter `?fen=...` pre-selects scope.
+2. **Color filter:** Optional filter by study color.
+3. **Line selection:** SM2 scheduler picks the most overdue line. If no lines are due, show "All caught up!" message.
+4. **Move-by-move drill:**
+   - Opponent's moves are auto-played after a configurable delay
+   - User's moves require board interaction
+   - After each user move: evaluate using the pivot decision tree (§9.2–9.4)
+   - Correct move: green highlight, show reason, advance
+   - Wrong move: red highlight, show correct move + reason, record error
+5. **Hint button:** Shows the first letter of the piece/square, or highlights the destination square. Marks `hintUsed = true` for quality calculation.
+6. **Skip button:** Marks the line with quality 0 and moves to the next due line.
+7. **Pivot prompts:** Modal dialog when the pivot-prompt scenario is triggered (§9.5).
+8. **End of line:** Show the line result screen (§9.7), apply SM2 grade via `sm2.gradeLine()` or auto-calculate via `sm2.autoQuality()`. Wait for user to click "Next Line" or "End Practice".
+9. **Session end:** Show summary (§9.8) when all due lines are reviewed OR when user clicks "End Practice".
+
+### 10.4 Manage Page (`pages/manage.js`)
+
+Data management and settings.
+
+**Layout:**
+
+```
+┌──────────────────────────────────────────────────────┐
+│  Data Management                                      │
+│                                                       │
+│  ┌─────────────┐  ┌──────────────┐  ┌─────────────┐ │
+│  │  Export JSON │  │ Import JSON  │  │  Clear All   │ │
+│  └─────────────┘  └──────────────┘  └─────────────┘ │
+│                                                       │
+│  Statistics:                                          │
+│  • Total nodes: 47                                    │
+│  • Total edges: 52                                    │
+│  • Total lines: 12                                    │
+│  • Lines due today: 3                                 │
+│  • Average ease factor: 2.35                          │
+│                                                       │
+│  Settings:                                            │
+│  • Auto-play delay: [500ms ▾]                         │
+│  • Auto quality rating: [✓]                           │
+│  • Board theme: [Brown ▾]                             │
+│  • Piece set: [CBurnett ▾]                            │
+│                                                       │
+└──────────────────────────────────────────────────────┘
+```
+
+**Behavior:**
+
+1. **Export:** Reads all five object stores, serializes to JSON, triggers download as `chess-trainer-backup-YYYY-MM-DD.json`.
+2. **Import:** File upload, validates JSON structure, offers "Merge" (add missing, skip existing) or "Replace" (wipe and restore).
+3. **Clear All:** Confirmation dialog ("Type DELETE to confirm"), then wipes all stores.
+4. **Statistics:** Real-time counts from IndexedDB.
+5. **Settings:** Saved to the `settings` store, applied on page load.
+
+---
+
+## 11. Board Integration
+
+Module: `board.js`
+
+Wraps **chessground** (Lichess's board library) with **chess.js** (for move legality).
+
+### 11.1 Initialization
+
+```javascript
+// Pseudo-code for board setup
+function createBoard(containerEl, options = {}) {
+    const chess = new Chess();  // chess.js instance
+    const ground = Chessground(containerEl, {
+        fen: chess.fen(),
+        orientation: options.color || 'white',
+        movable: {
+            free: false,
+            color: options.movableColor || 'both',
+            dests: legalDests(chess),  // computed from chess.js
+        },
+        events: {
+            move: (orig, dest) => {
+                // Validate and apply move via chess.js
+                const move = chess.move({ from: orig, to: dest, promotion: 'q' });
+                if (move) {
+                    options.onMove?.(move);
+                    ground.set({ fen: chess.fen(), movable: { dests: legalDests(chess) } });
                 }
-                for future in futures:
-                    edge = futures[future]
-                    try:
-                        tag = future.result(timeout=30)
-                        results.append((edge["id"], tag))
-                    except Exception as exc:
-                        log.error("stockfish_edge_failed",
-                                  edge_id=edge["id"], error=str(exc))
-                        results.append((edge["id"], {
-                            "is_anti_move": False, "eval_drop": None,
-                            "eval_before": None, "eval_after": None
-                        }))
-
-            # Checkpoint: write batch results to DB
-            db.update_edge_tags(results)
-            log.info("stockfish_batch_done", processed=len(results))
-```
-
-### 4.3 Study Plan Generator (with error handling and checkpointing)
-
-```python
-# pipeline/study_plan_generator.py
-
-import anthropic
-import chess
-import json
-import time
-import structlog
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
-
-log = structlog.get_logger()
-
-class StudyPlanGenerator:
-
-    PROMPT_VERSION = "v2.0"
-
-    def __init__(self, api_key: str, model: str = "claude-sonnet-4-6"):
-        self.client = anthropic.Anthropic(api_key=api_key)
-        self.model = model
-
-    def build_context(self, node: dict, edge: dict, siblings: list) -> str:
-        """Build rich context for LLM from stored data."""
-        board = chess.Board(node["fen"])
-
-        return f"""
-Position: {node["name"] or "Unnamed position"}
-FEN: {node["fen"]}
-ECO: {node["eco_code"] or "N/A"}
-Move played: {edge["move_san"]}
-Turn: {"White" if board.turn == chess.WHITE else "Black"}
-Depth: Move {node["depth"] // 2 + 1}
-
-Statistics:
-- This position appears in {node["total_games"]:,} games
-- White wins: {node["white_wins"]*100:.1f}%
-- Draws: {node["draws"]*100:.1f}%
-- Black wins: {node["black_wins"]*100:.1f}%
-
-Engine evaluation before move: {edge["eval_before"]} centipawns
-Engine evaluation after move: {edge["eval_after"]} centipawns
-Evaluation change: {edge["eval_drop"]:+.0f} centipawns
-Anti-move flag: {"YES — this is a mistake" if edge["is_anti_move"] else "No"}
-
-Other candidate moves from parent position:
-{self._format_siblings(siblings)}
-"""
-
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=4, max=60),
-        retry=retry_if_exception_type((anthropic.RateLimitError, anthropic.APIConnectionError))
-    )
-    def _call_llm(self, prompt: str) -> str:
-        """Call Claude API with automatic retry on rate limits."""
-        response = self.client.messages.create(
-            model=self.model,
-            max_tokens=800,
-            messages=[{"role": "user", "content": prompt}]
-        )
-        return response.content[0].text
-
-    def _parse_response(self, raw: str) -> dict:
-        """
-        Parse LLM JSON response with validation.
-        Handles markdown code blocks and partial JSON.
-        """
-        # Strip markdown code fences if present
-        text = raw.strip()
-        if text.startswith("```"):
-            text = text.split("\n", 1)[1]
-            if text.endswith("```"):
-                text = text[:-3]
-            text = text.strip()
-
-        data = json.loads(text)
-
-        # Validate required fields
-        required = ["why_play", "game_plan", "key_ideas"]
-        for field in required:
-            if field not in data or not data[field]:
-                raise ValueError(f"Missing required field: {field}")
-
-        if not isinstance(data.get("key_ideas"), list) or len(data["key_ideas"]) < 2:
-            raise ValueError("key_ideas must be a list with at least 2 items")
-
-        return data
-
-    def generate_reasoning(self, node: dict, edge: dict,
-                           siblings: list, color: str) -> dict | None:
-        """Generate human-readable reasoning for a move with full error handling."""
-        context = self.build_context(node, edge, siblings)
-
-        prompt = f"""
-You are a chess teacher explaining opening moves to a 1200 ELO student.
-
-{context}
-
-Generate clear, practical explanations for a student learning this opening.
-Respond in JSON with these exact fields:
-{{
-  "why_play": "2-3 sentences explaining why this is a good move.",
-  "why_not": "If anti-move, explain what goes wrong. Otherwise, what Black gives up by NOT playing this.",
-  "what_opponent_wants": "What is the opponent's strategic plan or threat after this move?",
-  "game_plan": "Next 2-3 move plan for the {color} player.",
-  "key_ideas": ["3-5 concrete takeaway phrases"]
-}}
-
-Return ONLY the JSON object, no markdown formatting.
-"""
-        try:
-            raw = self._call_llm(prompt)
-            return self._parse_response(raw)
-        except json.JSONDecodeError as e:
-            log.error("llm_json_parse_failed", edge_id=edge["id"], error=str(e))
-            return None
-        except ValueError as e:
-            log.error("llm_validation_failed", edge_id=edge["id"], error=str(e))
-            return None
-        except Exception as e:
-            log.error("llm_generation_failed", edge_id=edge["id"], error=str(e))
-            return None
-
-    def generate_all(self, db, batch_size: int = 50,
-                     depth_first: bool = True):
-        """
-        Process all edges that need reasoning, with checkpointing.
-        Processes shallower nodes first (higher priority).
-        Rate-limits to ~50 requests/minute to stay under API limits.
-        """
-        while True:
-            edges = db.get_edges_without_reasoning(
-                limit=batch_size,
-                order_by="depth ASC" if depth_first else "id ASC"
-            )
-            if not edges:
-                break
-
-            for edge in edges:
-                node = db.get_node(edge["parent_node_id"])
-                siblings = db.get_sibling_edges(edge["parent_node_id"], exclude_edge=edge["id"])
-                color = "White" if chess.Board(node["fen"]).turn == chess.WHITE else "Black"
-
-                result = self.generate_reasoning(node, edge, siblings, color)
-
-                if result:
-                    db.save_reasoning(edge["id"], color, result,
-                                      self.model, self.PROMPT_VERSION)
-                    db.mark_pipeline_complete("llm_reasoning", edge_id=edge["id"])
-                else:
-                    db.mark_pipeline_failed("llm_reasoning", edge_id=edge["id"],
-                                            error="Generation returned None")
-
-                # Rate limiting: ~50 req/min = 1.2s between calls
-                time.sleep(1.2)
-
-            log.info("llm_batch_done", batch_size=batch_size)
-
-    def _format_siblings(self, siblings: list) -> str:
-        return "\n".join([
-            f"  - {s['move_san']}: played {s['frequency']*100:.1f}% of games"
-            for s in siblings
-        ])
-```
-
-### 4.4 Puzzle Engine (with distractor generation)
-
-```python
-# engine/puzzle_generator.py
-
-import structlog
-
-log = structlog.get_logger()
-
-class PuzzleGenerator:
-    """
-    Generates puzzle definitions from stored node + edge data.
-    Distractors are generated via LLM at build time and stored statically.
-    """
-
-    def __init__(self, llm_generator=None):
-        self.llm = llm_generator  # optional, for distractor generation
-
-    def generate_for_node(self, node_id: int, db) -> list[dict]:
-        """Generate all puzzle types for a node."""
-        node = db.get_node_by_id(node_id)
-        edges = db.get_edges_by_parent(node_id)
-        reasoning = db.get_reasoning_by_node(node_id)
-
-        if not edges:
-            return []
-
-        puzzles = []
-
-        # Tier 1 — Basic recognition
-        puzzles.append(self._best_move_puzzle(node, edges))
-
-        # Tier 2 — Understanding why
-        puzzles.append(self._why_this_move_puzzle(node, edges, reasoning))
-
-        # Tier 3 — Anti-move awareness
-        anti_edges = [e for e in edges if e["is_anti_move"]]
-        if anti_edges:
-            puzzles.append(self._why_not_puzzle(node, anti_edges, reasoning))
-
-        # Tier 4 — Strategic thinking
-        puzzles.append(self._game_plan_puzzle(node, reasoning))
-        puzzles.append(self._consequence_puzzle(node, edges, reasoning))
-
-        # Tier 5 — Advanced
-        puzzles.append(self._predict_opponent_puzzle(node, edges, reasoning))
-        trap_edges = [e for e in edges if e["is_anti_move"] and e["frequency"] > 0.05]
-        if trap_edges:
-            puzzles.append(self._trap_recognition_puzzle(node, trap_edges, reasoning))
-
-        return [p for p in puzzles if p is not None]
-
-    def _best_move_puzzle(self, node, edges) -> dict:
-        main_line = max(edges, key=lambda e: e["frequency"])
-        wrong_options = [
-            {
-                "move": e["move_san"],
-                "reasoning_why_wrong": f"Played only {e['frequency']*100:.0f}% of the time at this level"
             }
-            for e in sorted(edges, key=lambda e: e["frequency"], reverse=True)[1:4]
-        ]
-        return {
-            "node_id": node["id"],
-            "puzzle_type": "best_move",
-            "difficulty_tier": 1,
-            "question": "What is the best move in this position?",
-            "correct_answer": main_line["move_uci"],
-            "correct_reasoning": "This is the most common and strongest move.",
-            "wrong_options": wrong_options
         }
+    });
 
-    def _why_this_move_puzzle(self, node, edges, reasoning) -> dict | None:
-        main_edge = max(edges, key=lambda e: e["frequency"])
-        r = reasoning.get(main_edge["id"])
-        if not r:
-            return None
-
-        wrong_options = self._generate_distractors(r, "why_this_move")
-
-        return {
-            "node_id": node["id"],
-            "puzzle_type": "why_this_move",
-            "difficulty_tier": 2,
-            "question": f"Why is {main_edge['move_san']} the right move here?",
-            "correct_answer": r["why_play"],
-            "correct_reasoning": r["why_play"],
-            "wrong_options": wrong_options
-        }
-
-    def _why_not_puzzle(self, node, anti_edges, reasoning) -> dict | None:
-        edge = anti_edges[0]
-        r = reasoning.get(edge["id"])
-        if not r or not r.get("why_not"):
-            return None
-        return {
-            "node_id": node["id"],
-            "puzzle_type": "why_not_move",
-            "difficulty_tier": 3,
-            "question": f"Why should you avoid {edge['move_san']} in this position?",
-            "correct_answer": r["why_not"],
-            "correct_reasoning": r["why_not"],
-            "wrong_options": self._generate_distractors(r, "why_not")
-        }
-
-    def _game_plan_puzzle(self, node, reasoning) -> dict | None:
-        # Use reasoning from the main line edge
-        if not reasoning:
-            return None
-        r = next(iter(reasoning.values()))
-        if not r.get("game_plan"):
-            return None
-        return {
-            "node_id": node["id"],
-            "puzzle_type": "game_plan",
-            "difficulty_tier": 4,
-            "question": "What is the strategic plan from this position?",
-            "correct_answer": r["game_plan"],
-            "correct_reasoning": r["game_plan"],
-            "wrong_options": self._generate_distractors(r, "game_plan")
-        }
-
-    def _consequence_puzzle(self, node, edges, reasoning) -> dict | None:
-        anti = [e for e in edges if e["is_anti_move"]]
-        if not anti or not reasoning:
-            return None
-        edge = anti[0]
-        r = reasoning.get(edge["id"])
-        if not r or not r.get("why_not"):
-            return None
-        return {
-            "node_id": node["id"],
-            "puzzle_type": "consequence",
-            "difficulty_tier": 4,
-            "question": f"What happens if you play {edge['move_san']}?",
-            "correct_answer": r["why_not"],
-            "correct_reasoning": r["why_not"],
-            "wrong_options": self._generate_distractors(r, "consequence")
-        }
-
-    def _predict_opponent_puzzle(self, node, edges, reasoning) -> dict | None:
-        if not reasoning:
-            return None
-        main_edge = max(edges, key=lambda e: e["frequency"])
-        r = reasoning.get(main_edge["id"])
-        if not r or not r.get("what_opponent_wants"):
-            return None
-        return {
-            "node_id": node["id"],
-            "puzzle_type": "predict_opponent",
-            "difficulty_tier": 5,
-            "question": "What is your opponent's main plan in this position?",
-            "correct_answer": r["what_opponent_wants"],
-            "correct_reasoning": r["what_opponent_wants"],
-            "wrong_options": self._generate_distractors(r, "predict_opponent")
-        }
-
-    def _trap_recognition_puzzle(self, node, trap_edges, reasoning) -> dict | None:
-        edge = trap_edges[0]
-        r = reasoning.get(edge["id"])
-        if not r:
-            return None
-        return {
-            "node_id": node["id"],
-            "puzzle_type": "trap_recognition",
-            "difficulty_tier": 5,
-            "question": f"{edge['move_san']} is a popular move here ({edge['frequency']*100:.0f}% of games). Is it a trap?",
-            "correct_answer": r.get("why_not", "Yes, this is a trap."),
-            "correct_reasoning": r.get("why_not", ""),
-            "wrong_options": self._generate_distractors(r, "trap")
-        }
-
-    def _generate_distractors(self, reasoning: dict, puzzle_type: str) -> list[dict]:
-        """
-        Generate plausible wrong options.
-
-        Strategy:
-        1. Try LLM-generated distractors (build-time, stored statically)
-        2. Fall back to heuristic distractors from the reasoning data
-        """
-        if self.llm:
-            try:
-                return self._llm_distractors(reasoning, puzzle_type)
-            except Exception:
-                log.warning("distractor_llm_failed", puzzle_type=puzzle_type)
-
-        # Heuristic fallback: construct plausible-sounding wrong answers
-        # from fragments of other reasoning fields
-        distractors = []
-        fields = ["why_play", "why_not", "what_opponent_wants", "game_plan"]
-        used_field = {
-            "why_this_move": "why_play",
-            "why_not": "why_not",
-            "game_plan": "game_plan",
-            "predict_opponent": "what_opponent_wants",
-            "consequence": "why_not",
-            "trap": "why_not",
-        }.get(puzzle_type, "why_play")
-
-        for field in fields:
-            if field != used_field and reasoning.get(field):
-                distractors.append({
-                    "text": reasoning[field],
-                    "reasoning_why_wrong": "This describes a different aspect of the position."
-                })
-
-        return distractors[:3]
-
-    def _llm_distractors(self, reasoning: dict, puzzle_type: str) -> list[dict]:
-        """Generate 3 plausible but wrong explanations via LLM."""
-        prompt = f"""
-Given this correct chess explanation:
-"{reasoning.get('why_play', reasoning.get('game_plan', ''))}"
-
-Generate exactly 3 plausible but WRONG explanations for a chess puzzle.
-Each should sound reasonable but contain a factual or strategic error.
-Return JSON array: [{{"text": "...", "reasoning_why_wrong": "..."}}]
-Return ONLY the JSON array.
-"""
-        raw = self.llm._call_llm(prompt)
-        import json
-        text = raw.strip()
-        if text.startswith("```"):
-            text = text.split("\n", 1)[1]
-            if text.endswith("```"):
-                text = text[:-3]
-        return json.loads(text.strip())
+    return { chess, ground, /* helper methods */ };
+}
 ```
 
-### 4.5 Pipeline Orchestrator
+### 11.2 Helper Functions
 
-Each pipeline stage can be run independently. The `pipeline_progress` table
-acts as the checkpoint store so any stage can be resumed after failure.
+| Function | Description |
+|----------|-------------|
+| `legalDests(chess)` | Compute a `Map<square, square[]>` of legal moves for chessground's `movable.dests` |
+| `setPosition(fen)` | Reset both chess.js and chessground to a FEN |
+| `setOrientation(color)` | Flip the board |
+| `playMove(san)` | Programmatically play a move (returns the move object) |
+| `undoMove()` | Undo the last move in chess.js and update chessground |
+| `highlightSquares(squares, className)` | Add visual markers to squares (for hints, errors) |
+| `setInteractive(boolean)` | Enable/disable user moves (used during opponent's auto-play) |
 
-```python
-# pipeline/orchestrator.py
+### 11.3 Promotion Handling
 
-import structlog
+When a pawn reaches the promotion rank, show a promotion chooser UI (Queen, Rook, Bishop, Knight). Chessground supports this natively via the `premovable` config. Default to Queen auto-promotion with an option to choose.
 
-log = structlog.get_logger()
+---
 
-class PipelineOrchestrator:
-    """
-    Runs pipeline stages in order, skipping already-completed work.
-    Each stage is idempotent and can be re-run safely.
-    """
+## 12. SPA Routing
 
-    def __init__(self, db, config: dict):
-        self.db = db
-        self.config = config
+Module: `app.js`
 
-    def run_all(self):
-        """Run the full pipeline end-to-end."""
-        stages = [
-            ("pgn_parse", self._run_pgn_parse),
-            ("dag_build", self._run_dag_build),
-            ("stockfish", self._run_stockfish),
-            ("eco_map", self._run_eco_map),
-            ("llm_reasoning", self._run_llm_reasoning),
-            ("puzzles", self._run_puzzles),
-        ]
+Hash-based client-side routing. No server-side routing needed.
 
-        for name, fn in stages:
-            remaining = self.db.count_pending(name)
-            if remaining == 0:
-                log.info("stage_skipped", stage=name, reason="all_complete")
-                continue
-            log.info("stage_starting", stage=name, remaining=remaining)
-            fn()
-            log.info("stage_done", stage=name)
+### 12.1 Routes
 
-    def _run_pgn_parse(self):
-        from pipeline.pgn_parser import parse_pgn
-        from pipeline.aggregator import StreamingAggregator
-        agg = StreamingAggregator(self.db, max_positions=self.config.get("max_positions", 100_000))
-        for record in parse_pgn(
-            self.config["pgn_path"],
-            min_rating=self.config.get("min_rating", 1000),
-            max_rating=self.config.get("max_rating", 1600),
-        ):
-            agg.add(record)
-        agg.build_dag(threshold=self.config.get("threshold", 0.10))
+| Hash | Page Module | Description |
+|------|-------------|-------------|
+| `#/study` | `pages/study.js` | Feed in new opening lines |
+| `#/browse` | `pages/browse.js` | Explore and name the repertoire DAG |
+| `#/practice` | `pages/practice.js` | SM2-driven practice (optional `?fen=...` query) |
+| `#/manage` | `pages/manage.js` | Export, import, settings |
+| (default) | Redirect to `#/practice` | Landing page shows practice |
 
-    def _run_dag_build(self):
-        # Transposition detection, depth assignment
-        pass
+### 12.2 Page Lifecycle
 
-    def _run_stockfish(self):
-        from pipeline.engine_tagger import AntiMoveTagger
-        tagger = AntiMoveTagger(
-            stockfish_path=self.config["stockfish_path"],
-            depth=self.config.get("stockfish_depth", 18),
-        )
-        tagger.tag_all_edges(
-            self.db,
-            batch_size=self.config.get("stockfish_batch", 100),
-            workers=self.config.get("stockfish_workers", 4),
-        )
+Each page module exports:
 
-    def _run_eco_map(self):
-        pass
-
-    def _run_llm_reasoning(self):
-        from pipeline.study_plan_generator import StudyPlanGenerator
-        gen = StudyPlanGenerator(api_key=self.config["anthropic_api_key"])
-        gen.generate_all(self.db, depth_first=True)
-
-    def _run_puzzles(self):
-        from pipeline.puzzle_generator import PuzzleGenerator
-        gen = PuzzleGenerator()
-        nodes = self.db.get_nodes_without_puzzles()
-        for node_id in nodes:
-            puzzles = gen.generate_for_node(node_id, self.db)
-            self.db.save_puzzles(puzzles)
-            self.db.mark_pipeline_complete("puzzles", node_id=node_id)
+```javascript
+export default {
+    mount(container, params) {
+        // Called when navigating TO this page
+        // container: the DOM element to render into
+        // params: parsed URL parameters (e.g., { fen: "..." })
+        // Set up DOM, event listeners, board instances
+    },
+    unmount() {
+        // Called when navigating AWAY from this page
+        // Clean up event listeners, destroy board instances
+        // Save any pending state
+    }
+};
 ```
 
----
+### 12.3 Navigation
 
-## 5. Development Phases
+```html
+<nav>
+    <a href="#/study">Study</a>
+    <a href="#/browse">Browse</a>
+    <a href="#/practice">Practice</a>
+    <a href="#/manage">Manage</a>
+</nav>
+<main id="page-container"></main>
+```
 
-### Phase 1 — DAG Builder (Weeks 1–5)
-
-**Goal:** Working DAG in PostgreSQL from Lichess PGN data.
-
-Tasks:
-- Set up PostgreSQL schema (all tables, indexes, staging tables)
-- Build PGN parser with rating + time control filtering
-- Build streaming aggregator with bounded memory and UPSERT
-- Implement FEN normalization and transposition detection (top-5 paths)
-- Integrate Stockfish with parallel worker pool + checkpointing
-- Load ECO code database and map to FENs
-- Write DAG verification script
-- Set up structlog for pipeline observability
-
-Deliverable: Populated PostgreSQL database with ~50k–200k nodes, all edges tagged.
-
-Validation metrics:
-- Starting position has correct children (e4, d4, Nf3, c4 as top moves)
-- Scandinavian after 1.e4 d5 2.exd5 has Qxd5 and Nf6 as children
-- No duplicate FENs in nodes table
-- All anti-moves have eval_drop > 50 centipawns
-- Memory usage stays under 2GB during aggregation
+The router listens for `hashchange` events, unmounts the current page, and mounts the new one.
 
 ---
 
-### Phase 2 — Study Plan Generator (Weeks 6–9)
+## 13. Offline & PWA
 
-**Goal:** Pre-generated reasoning stored for all edges.
+### 13.1 Service Worker (`sw.js`)
 
-Tasks:
-- Build LLM prompt pipeline with full position context
-- Implement retry with exponential backoff (tenacity)
-- Implement JSON response validation
-- Implement checkpointing via pipeline_progress table
-- Build prompt versioning (track model + prompt version per reasoning)
-- Add regeneration support for specific nodes
-- Process depth-first (shallower = higher priority)
-- Implement cost tracking and progress logging
+**Strategy:** Cache-first for all static assets. No network requests needed after first load.
 
-LLM Cost Estimate:
-- ~200k edges × ~400 input tokens = ~80M input tokens → ~$240 (Sonnet)
-- ~200k edges × ~500 output tokens = ~100M output tokens → ~$1,500 (Sonnet)
-- **Total: ~$1,740 per full build**
-- Mitigation: process by depth, stop at depth 15 initially (~60k edges, ~$520)
+```
+Install event:
+    Cache all files: index.html, CSS files, JS files, lib/ files, piece SVGs
 
-Deliverable: All edges have reasoning content. Pipeline is resumable after failures.
+Fetch event:
+    If request matches cache → return cached response
+    Else → fetch from network, cache the response, return it
+```
 
----
+**Cache versioning:** A version string in `sw.js` (e.g., `"v1.0.0"`) triggers cache invalidation on updates. Old caches are cleaned up in the `activate` event.
 
-### Phase 3 — Puzzle Engine (Weeks 10–12)
+### 13.2 PWA Manifest (`manifest.json`)
 
-**Goal:** All puzzle types generated and stored for every node.
+```json
+{
+    "name": "Chess Opening Trainer",
+    "short_name": "ChessTrainer",
+    "start_url": "/",
+    "display": "standalone",
+    "background_color": "#312e2b",
+    "theme_color": "#312e2b",
+    "icons": [
+        { "src": "lib/assets/icon-192.png", "sizes": "192x192", "type": "image/png" },
+        { "src": "lib/assets/icon-512.png", "sizes": "512x512", "type": "image/png" }
+    ]
+}
+```
 
-Tasks:
-- Implement all 8 puzzle type generators
-- Build distractor generator (LLM with heuristic fallback)
-- Implement difficulty tier assignment
-- Assign puzzles to nodes in DB
-- Write puzzle validation script (all nodes have tier 1–3 minimum)
+### 13.3 Offline Guarantee
 
-Deliverable: Puzzles table populated, minimum 4 puzzles per node.
-
----
-
-## 6. Future Work
-
-These are designed but not yet implemented. They will begin after Phase 3 is validated.
-
-| Phase | What | When |
-|---|---|---|
-| Phase 4 | SRS Engine — SM-2 with node-level ripple propagation | After Phase 3 |
-| Phase 5 | REST API — FastAPI with all DAG/Study/Puzzle/SRS endpoints | After Phase 4 |
-| Phase 6 | React Frontend — DAG explorer, lesson view, puzzle UI, dashboard | After Phase 5 |
-| Phase 7 | Update Pipeline — Diff new PGN data, patch DAG, regenerate | After Phase 6 |
-
-### Periodic Update Strategy (future)
-
-| Change Type | Action |
-|---|---|
-| New position crosses 10% threshold | Add node + edge, generate reasoning, generate puzzles |
-| Existing position's frequency changes | Update stats, re-evaluate anti-move flags |
-| Position drops below 10% threshold | Archive node (preserve user SRS data), remove from active DAG |
-| New anti-move detected | Update edge flag, update puzzles, reschedule active learners |
-| Opening name changes (ECO update) | Update name field only |
-
-- **Full rebuild:** Every 6 months
-- **Stats refresh:** Monthly
-- **Anti-move re-check:** Quarterly
+- **All JavaScript** is vendored locally (chessground, chess.js) — no CDN dependencies
+- **All CSS** is vendored locally — including chessground themes and piece SVGs
+- **IndexedDB** is the sole data store — no server calls
+- **Service worker** caches everything on first load — subsequent visits are fully offline
+- **No external API calls** — no analytics, no telemetry, no external fonts
 
 ---
 
-## 7. Open Questions and Decisions
+## 14. Data Portability
 
-| Question | Options | Recommendation |
-|---|---|---|
-| FEN normalization depth | Strip move counters only vs. also strip castling rights | Strip move counters only; castling rights affect legality |
-| 10% threshold — fixed or adaptive? | Fixed 10% vs. higher at shallow depths | Start fixed; adaptive can be Phase 7+ |
-| Transposition handling in study plan | Show transposition notice vs. transparent | Show — it's a teaching moment |
-| Anti-move threshold | 50 vs. 30 vs. 100 centipawns | 50 cp; tune after Phase 1 |
-| LLM reasoning — when to regenerate | Never vs. on model upgrade vs. on stats change | On major model upgrades only |
-| Puzzle distractors | Static heuristics vs. LLM-generated | LLM at build time with heuristic fallback |
-| Multi-user from day one | Single-user vs. multi-user schema | Multi-user schema from day one |
-| Mobile support | Responsive web vs. native app | Responsive web first |
-| Offline support | Online-only vs. cached offline | Cache today's session (PWA), Phase 7+ |
-| LLM depth cutoff | All nodes vs. depth ≤ 15 initially | Depth ≤ 15 for first build to control cost |
+### 14.1 Export Format
+
+```json
+{
+    "version": 1,
+    "exportedAt": "2026-03-01T12:00:00Z",
+    "data": {
+        "nodes": [
+            {
+                "fen": "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3",
+                "name": null,
+                "notes": "",
+                "createdAt": 1709294400000
+            }
+        ],
+        "edges": [
+            {
+                "id": 1,
+                "parentFen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -",
+                "childFen": "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3",
+                "moveSan": "e4",
+                "moveUci": "e2e4",
+                "color": "white",
+                "reasons": { "Ruy Lopez": "Control the center, open lines for bishop and queen" },
+                "createdAt": 1709294400000
+            }
+        ],
+        "lines": [
+            {
+                "id": 1,
+                "color": "white",
+                "rootFen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -",
+                "leafFen": "r1bqkbnr/pppp1ppp/2n5/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R b KQkq -",
+                "fens": ["..."],
+                "moves": ["e4", "e5", "Nf3", "Nc6", "Bb5"],
+                "label": "Ruy Lopez",
+                "easeFactor": 2.5,
+                "interval": 0,
+                "repetitions": 0,
+                "nextReviewDate": 0,
+                "lastReviewDate": null,
+                "createdAt": 1709294400000
+            }
+        ],
+        "settings": [
+            { "key": "practiceDelay", "value": 500 },
+            { "key": "autoRating", "value": true }
+        ],
+        "names": [
+            {
+                "id": 1,
+                "lineId": 1,
+                "part1": "Ruy Lopez",
+                "part2": "",
+                "part3": "",
+                "rootFen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -",
+                "leafFen": "r1bqkbnr/pppp1ppp/2n5/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R b KQkq -",
+                "sourceFen": "r1bqkbnr/pppp1ppp/2n5/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R b KQkq -",
+                "createdAt": 1709294400000
+            }
+        ]
+    }
+}
+```
+
+### 14.2 Import Modes
+
+| Mode | Behavior |
+|------|----------|
+| **Merge** | For each record: if a record with the same key exists, skip it. If not, insert it. Lines are matched by `(rootFen, leafFen, color)` tuple. |
+| **Replace** | Wipe all stores, then insert all records from the import file. |
+
+### 14.3 Validation
+
+On import, validate:
+- `version` field matches expected version
+- All required fields are present in each record
+- All FENs are well-formed (4 space-separated parts after normalization)
+- All `fens[]` arrays in lines are consistent with `moves[]` arrays (same length relationship)
+- Edge references point to existing nodes (or nodes present in the import)
 
 ---
 
-*Document version 2.1 — February 2026*
-*Scope: Build-time pipeline (DAG + Lessons + Puzzles)*
-*Next review: After Phase 1 completion*
+## 15. Deployment
+
+### 15.1 Local Development
+
+```bash
+# Any static file server works
+npx serve .
+# or
+python3 -m http.server 8000
+```
+
+Open `http://localhost:8000` in a browser. Service worker only activates over HTTPS or localhost.
+
+### 15.2 GitHub Pages
+
+```bash
+# Repo root IS the site root — no build step needed
+git push origin main
+# Enable GitHub Pages in repo settings → Source: main branch, root folder
+```
+
+**URL:** `https://<username>.github.io/<repo-name>/`
+
+### 15.3 Netlify / Vercel
+
+Drag-and-drop deploy of the repo root. No build command, no output directory configuration needed.
+
+---
+
+## 16. Open Questions & Future Work
+
+### Open Questions
+
+| # | Question | Notes |
+|---|----------|-------|
+| Q1 | ~~Should the starting position always be standard, or allow custom FEN starting points?~~ | **RESOLVED:** Custom starting positions are supported in v1. The Study page has a "Mark Starting Position" button — the user makes moves to reach a position, marks it, and then records the line from there. Lines store the `rootFen` of the marked position. See Doc 2 §3.1 and Doc 6 §3.3. |
+| Q2 | How to handle transpositions during practice? If line A and line B converge at the same FEN, and the user is practicing line A, should they see line B's continuation as valid? | Current design: yes, via pivot logic. But this could be confusing if lines converge and then diverge again. |
+| Q3 | Should hints penalize the quality score more aggressively? | Current: hintUsed caps quality at 4. Could be configurable. |
+| Q4 | Maximum sensible DAG size for IndexedDB + in-browser performance? | Likely fine up to ~10,000 nodes. Tree rendering may need virtualization beyond that. |
+
+### Future Work
+
+| # | Feature | Priority |
+|---|---------|----------|
+| F1 | Google Drive sync for cross-device backup | High |
+| F2 | Local filesystem backup (File System Access API) | Medium |
+| F3 | PGN import — parse a PGN file and add all games/variations as lines | Medium |
+| F4 | Lichess study import — fetch from Lichess API (opt-in, not default) | Low |
+| F5 | Statistics page — practice history, accuracy trends, heat maps | Medium |
+| F6 | Keyboard navigation — arrow keys to navigate the tree, shortcuts for practice | Medium |
+| F7 | Dark/light theme toggle | Low |
+| F8 | Mobile-optimized layout (responsive CSS) | Medium |
+| F9 | Sound effects — move sounds, correct/incorrect audio feedback | Low |
+| F10 | Opening explorer integration — show master game stats for comparison (opt-in fetch) | Low |
+| F11 | Multi-repertoire support — separate DAGs for different repertoire sets (tournament vs. blitz) | Medium |
+| F12 | Collaborative sharing — export a single subtree as a shareable URL/file | Low |
+
+---
+
+## Appendix A: Glossary
+
+| Term | Definition |
+|------|-----------|
+| **DAG** | Directed Acyclic Graph — the data structure storing the user's opening repertoire. Nodes are chess positions (FENs), edges are moves. |
+| **FEN** | Forsyth–Edwards Notation — a compact string encoding a chess position. |
+| **Normalized FEN** | FEN with halfmove clock and fullmove number stripped. Used as the unique position identifier. |
+| **SAN** | Standard Algebraic Notation — human-readable move notation (e.g., `Nf3`, `exd5`). |
+| **UCI** | Universal Chess Interface — machine-readable move notation (e.g., `g1f3`, `e4d5`). |
+| **SM2** | SuperMemo 2 — a spaced repetition algorithm that schedules reviews based on recall quality. |
+| **Line** | A complete sequence of moves from the starting position to an endpoint, representing one variation the user has studied. |
+| **Pivot** | During practice, when the user plays a move belonging to a different line, the system switches to practicing that line instead. |
+| **Ease Factor** | SM2 parameter representing how easy a line is for the user. Higher = easier, longer intervals between reviews. Minimum 1.3. |
+| **Subtree** | All positions and moves reachable from a given node in the DAG. Used to scope practice to a portion of the repertoire. |
+
+---
+
+## Appendix B: SM2 Worked Example
+
+**Line:** Ruy Lopez > Berlin Defense (5 moves)
+
+| Review # | Date | Quality | Ease Factor | Interval | Next Review |
+|----------|------|---------|-------------|----------|-------------|
+| 1 | Mar 1 | 4 | 2.50 | 1 day | Mar 2 |
+| 2 | Mar 2 | 5 | 2.60 | 6 days | Mar 8 |
+| 3 | Mar 8 | 3 | 2.46 | 15 days | Mar 23 |
+| 4 | Mar 23 | 5 | 2.56 | 38 days | Apr 30 |
+| 5 | Apr 30 | 2 | 2.38 | 1 day | May 1 |
+| 6 | May 1 | 4 | 2.38 | 1 day | May 2 |
+| 7 | May 2 | 5 | 2.48 | 6 days | May 8 |
+
+- Review 5: quality < 3 → reset to 1-day interval, repetitions back to 0.
+- Review 6: first repetition after reset → 1-day interval.
+- Review 7: second repetition → 6-day interval.
+
+---
+
+## Appendix C: Pivot Logic Worked Example
+
+**Setup:** User has two lines stored:
+- **Line A:** 1. e4 e5 2. Nf3 Nc6 3. **Bb5** (Ruy Lopez) — mastered (reps=5, EF=2.6)
+- **Line B:** 1. e4 e5 2. Nf3 Nc6 3. **Bc4** (Italian Game) — not mastered (reps=1, EF=2.3)
+
+**User is practicing Line A (it's due):**
+
+1. System auto-plays: 1. e4
+2. User plays: 1...e5 ✓ (matches Line A)
+3. System auto-plays: 2. Nf3
+4. User plays: 2...Nc6 ✓ (matches Line A)
+5. System expects: 3. Bb5 (Ruy Lopez)
+6. **User plays: 3. Bc4** (Italian Game move)
+
+**Evaluation:**
+- `Bc4` ≠ `Bb5` — not exact match
+- DAG lookup: edge from current FEN with `moveSan == "Bc4"` exists → Line B
+- Is Line B mastered? reps=1, EF=2.3 → `isLineMastered = false`
+- **Decision: Case B → Silent pivot to Line B**
+- User's `Bc4` is accepted as CORRECT
+- Practice continues along Line B from move 3 onward
+- Line A is NOT updated (stays untouched, will be presented again)
+- Line B gets a full SM2 update based on accuracy
+
+**If Line B were mastered (reps=5, EF=2.6):**
+- `isLineMastered = true`
+- **Decision: Case A → Inform and undo**
+- Show "This variation (Italian Game) is already mastered"
+- Undo `Bc4` on the board
+- Wait for user to play `Bb5` (the expected move for Line A)
