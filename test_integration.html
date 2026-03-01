@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Integration Tests — Chess Opening Trainer</title>
+  <link rel="stylesheet" href="css/chessground.base.css">
+  <link rel="stylesheet" href="css/chessground.brown.css">
+  <link rel="stylesheet" href="css/chessground.cburnett.css">
+  <style>
+    body { font-family: monospace; padding: 16px; background: #1a1a1a; color: #eee; }
+    .pass { color: #4caf50; }
+    .fail { color: #f44336; }
+    #results { margin-top: 16px; white-space: pre-wrap; }
+    .board-container, #practice-board-container {
+      width: 320px; height: 320px;
+    }
+    cg-board { width: 320px; height: 320px; }
+    .practice-page { position: relative; }
+    .line-result-overlay, .session-summary-overlay {
+      position: absolute; top: 0; left: 0; width: 100%; z-index: 100;
+      background: #222; padding: 12px;
+    }
+    .practice-message { padding: 8px; background: #333; border-radius: 4px; margin-top: 8px; }
+    .practice-body { display: flex; gap: 16px; }
+    .practice-sidebar { min-width: 200px; }
+  </style>
+</head>
+<body>
+<h1>Integration Tests</h1>
+<div id="container" style="min-height: 400px;"></div>
+<div id="results"></div>
+
+<script type="module">
+import * as db from './js/db.js';
+import * as dag from './js/dag.js';
+import * as sm2 from './js/sm2.js';
+import practice, {
+  _simulateUserMove,
+  _waitForUserTurn,
+  _getState,
+  _waitForLineComplete
+} from './js/pages/practice.js';
+
+const resultsEl = document.getElementById('results');
+let totalTests = 0, passCount = 0, failCount = 0;
+
+function log(msg) { resultsEl.textContent += msg + '\n'; }
+
+function assert(condition, label) {
+  totalTests++;
+  if (condition) { passCount++; log(`  ✓ PASS: ${label}`); }
+  else { failCount++; log(`  ✗ FAIL: ${label}`); }
+}
+
+function section(name) { log(`\n── ${name} ──`); }
+
+function normalizeFen(fen) { return fen.split(' ').slice(0, 4).join(' '); }
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+const container = document.getElementById('container');
+
+// Compute FENs from moves using chess.js
+let Chess;
+async function preload() {
+  const mod = await import('./lib/chess.min.js');
+  Chess = mod.Chess;
+}
+
+function computeFens(moves, startFen) {
+  const chess = new Chess(startFen || 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1');
+  const fens = [normalizeFen(chess.fen())];
+  for (const m of moves) {
+    chess.move(m);
+    fens.push(normalizeFen(chess.fen()));
+  }
+  return fens;
+}
+
+// Directly insert a line + DAG data into IndexedDB
+async function addTestLine(opts) {
+  const fens = opts.fens;
+  const moves = opts.moves;
+  // Add nodes
+  for (const fen of fens) {
+    const existing = await db.get('nodes', fen);
+    if (!existing) {
+      await db.put('nodes', { fen, name: null, notes: '', createdAt: Date.now() });
+    }
+  }
+  // Add edges
+  for (let i = 0; i < moves.length; i++) {
+    const existing = await db.getAllByIndex('edges', 'byParentMove', [fens[i], moves[i]]);
+    if (existing.length === 0) {
+      await db.add('edges', {
+        parentFen: fens[i],
+        childFen: fens[i + 1],
+        moveSan: moves[i],
+        moveUci: '',
+        color: i % 2 === 0 ? 'white' : 'black',
+        reasons: {},
+        createdAt: Date.now(),
+      });
+    }
+  }
+  // Add line
+  const record = {
+    label: opts.label || 'Test Line',
+    color: opts.color || 'white',
+    rootFen: opts.rootFen || fens[0],
+    leafFen: fens[fens.length - 1],
+    fens,
+    moves,
+    easeFactor: 2.5,
+    interval: 0,
+    repetitions: 0,
+    nextReviewDate: 0,
+    lastReviewDate: null,
+    createdAt: Date.now(),
+  };
+  return await db.add('lines', record);
+}
+
+async function freshDB() {
+  try { practice.unmount(); } catch {}
+  db.closeDB();
+  await db.deleteDB();
+  await db.openDB();
+}
+
+// ───────────────────────────────────────────────────────────────────
+// TEST 1: Practice as Black — board should be interactive after White's auto-move
+// ───────────────────────────────────────────────────────────────────
+async function testPracticeAsBlack() {
+  section('1. Practice as Black — board interactive after opponent move');
+  await freshDB();
+
+  // Sicilian: 1. e4 c5 (White plays e4, user plays c5 as Black)
+  const moves = ['e4', 'c5'];
+  const fens = computeFens(moves);
+
+  await addTestLine({ label: 'Sicilian', color: 'black', moves, fens });
+
+  // Mount practice page
+  await practice.mount(container, {});
+
+  // Wait for the practice engine to auto-play White's e4 and ask for user move
+  const ready = await _waitForUserTurn(5000);
+  assert(ready, 'Practice engine is waiting for user move');
+
+  const state = _getState();
+  assert(state.userColor === 'black', 'User is playing as Black');
+  assert(state.moveIndex === 1, 'Move index is 1 (after White e4)');
+
+  // Check board orientation
+  const groundState = state.board.ground.state;
+  assert(groundState.orientation === 'black', 'Board orientation is Black');
+
+  // THE KEY CHECK: movable color must be 'black' so user can move
+  assert(groundState.movable.color === 'black',
+    'Board movable color is black (user can move black pieces)');
+
+  // Verify legal dests exist (board is not frozen)
+  const dests = groundState.movable.dests;
+  const hasLegalMoves = dests && dests.size > 0;
+  assert(hasLegalMoves, 'Board has legal move destinations (not frozen)');
+
+  // Actually simulate the user's move
+  const moved = _simulateUserMove('c5');
+  assert(moved, 'User can play c5 as Black');
+
+  practice.unmount();
+}
+
+// ───────────────────────────────────────────────────────────────────
+// TEST 2: Practice as White — basic drill works (regression check)
+// ───────────────────────────────────────────────────────────────────
+async function testPracticeAsWhite() {
+  section('2. Practice as White — basic drill works');
+  await freshDB();
+
+  // Italian: 1. e4 e5 2. Nf3 Nc6 3. Bc4
+  const moves = ['e4', 'e5', 'Nf3', 'Nc6', 'Bc4'];
+  const fens = computeFens(moves);
+
+  await addTestLine({ label: 'Italian', color: 'white', moves, fens });
+
+  await practice.mount(container, {});
+
+  // White moves first — engine should wait for user input on move 0
+  const ready = await _waitForUserTurn(5000);
+  assert(ready, 'Practice engine waiting for user move as White');
+
+  const state = _getState();
+  assert(state.userColor === 'white', 'User is White');
+  assert(state.moveIndex === 0, 'Move index is 0 (user moves first)');
+
+  // Board should be interactive for White
+  const groundState = state.board.ground.state;
+  assert(groundState.movable.color === 'white', 'Board movable color is white');
+
+  // Play e4
+  _simulateUserMove('e4');
+
+  // Wait for opponent e5 auto-play, then user's turn again
+  const ready2 = await _waitForUserTurn(5000);
+  assert(ready2, 'Waiting for user move on move 2 (Nf3)');
+
+  const state2 = _getState();
+  assert(state2.moveIndex === 2, 'Move index is 2 after e4 e5');
+
+  // Verify board is still interactive for White
+  const gs2 = state2.board.ground.state;
+  assert(gs2.movable.color === 'white', 'Board still movable for white on move 2');
+
+  _simulateUserMove('Nf3');
+
+  // Wait for Nc6 auto-play, then Bc4 user turn
+  const ready3 = await _waitForUserTurn(5000);
+  assert(ready3, 'Waiting for Bc4');
+
+  _simulateUserMove('Bc4');
+
+  // Line should complete
+  const done = await _waitForLineComplete(5000);
+  assert(done, 'Line completed successfully');
+
+  practice.unmount();
+}
+
+// ───────────────────────────────────────────────────────────────────
+// TEST 3: Practice as Black — full line completion
+// ───────────────────────────────────────────────────────────────────
+async function testBlackFullLine() {
+  section('3. Practice as Black — full line completion');
+  await freshDB();
+
+  // French Defense: 1. e4 e6 2. d4 d5
+  const moves = ['e4', 'e6', 'd4', 'd5'];
+  const fens = computeFens(moves);
+
+  await addTestLine({ label: 'French', color: 'black', moves, fens });
+
+  await practice.mount(container, {});
+
+  // White's e4 auto-plays, then user plays e6
+  let ready = await _waitForUserTurn(5000);
+  assert(ready, 'Ready for e6');
+  _simulateUserMove('e6');
+
+  // White's d4 auto-plays, then user plays d5
+  ready = await _waitForUserTurn(5000);
+  assert(ready, 'Ready for d5');
+
+  const state = _getState();
+  const gs = state.board.ground.state;
+  assert(gs.movable.color === 'black',
+    'Board still interactive for black on second user move');
+
+  _simulateUserMove('d5');
+
+  const done = await _waitForLineComplete(5000);
+  assert(done, 'French Defense line completed');
+
+  practice.unmount();
+}
+
+// ───────────────────────────────────────────────────────────────────
+// Run all tests
+// ───────────────────────────────────────────────────────────────────
+async function runAll() {
+  log('Integration Tests — Chess Opening Trainer\n');
+  await preload();
+
+  await testPracticeAsBlack();
+  await testPracticeAsWhite();
+  await testBlackFullLine();
+
+  log(`\n════════════════════════════════════`);
+  log(`Total: ${totalTests}  Pass: ${passCount}  Fail: ${failCount}`);
+  log(`════════════════════════════════════`);
+
+  window.__TEST_RESULTS__ = { total: totalTests, pass: passCount, fail: failCount };
+}
+
+runAll().catch(err => {
+  log(`\nFATAL: ${err.message}\n${err.stack}`);
+  window.__TEST_RESULTS__ = { total: totalTests, pass: passCount, fail: failCount, error: err.message };
+});
+</script>
+</body>
+</html>

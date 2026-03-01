@@ -290,9 +290,7 @@ async function drillLine(line) {
   board.setOrientation(userColor);
 
   // Configure movable color to user's color
-  board.ground.set({
-    movable: { color: userColor },
-  });
+  board.setMovableColor(userColor);
 
   renderSidebar();
 

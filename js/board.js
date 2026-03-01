@@ -104,7 +104,7 @@ export function createBoard(containerEl, options = {}) {
   const fen = options.fen || 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
   const chess = new Chess(fen);
   const orientation = options.color || 'white';
-  const movableColor = options.movableColor || 'both';
+  let movableColor = options.movableColor || 'both';
   const onMove = options.onMove || null;
 
   // Track custom highlights
@@ -250,6 +250,20 @@ export function createBoard(containerEl, options = {}) {
   }
 
   /**
+   * Set which color the user can move.
+   * @param {string} color — 'white', 'black', or 'both'
+   */
+  function setMovableColor(color) {
+    movableColor = color;
+    ground.set({
+      movable: {
+        color: movableColor,
+        dests: legalDests(chess),
+      },
+    });
+  }
+
+  /**
    * Enable/disable user moves.
    * @param {boolean} enabled
    */
@@ -278,6 +292,7 @@ export function createBoard(containerEl, options = {}) {
     undoMove,
     highlightSquares,
     clearHighlights,
+    setMovableColor,
     setInteractive,
     destroy,
   };
