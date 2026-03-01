@@ -1,0 +1,561 @@
+/* style.css — Chess Opening Trainer main stylesheet */
+
+/* ── Reset & Base ── */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  --bg-primary: #312e2b;
+  --bg-secondary: #272421;
+  --bg-surface: #3d3a37;
+  --bg-hover: #4a4643;
+  --text-primary: #d4d0c9;
+  --text-secondary: #a09d98;
+  --accent: #629924;
+  --accent-hover: #7ab82f;
+  --danger: #c62828;
+  --danger-hover: #e53935;
+  --border: #504d49;
+  --white-move: #e0dcd6;
+  --black-move: #b0ada8;
+  --font-main: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+  --font-mono: 'Courier New', Courier, monospace;
+}
+
+html, body {
+  height: 100%;
+  font-family: var(--font-main);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  line-height: 1.5;
+}
+
+/* ── Nav Bar ── */
+nav {
+  display: flex;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  padding: 0 16px;
+}
+
+nav a {
+  display: inline-block;
+  padding: 12px 20px;
+  color: var(--text-secondary);
+  text-decoration: none;
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  border-bottom: 3px solid transparent;
+  transition: color 0.2s, border-color 0.2s;
+}
+
+nav a:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+nav a.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+/* ── Page Container ── */
+#page-container {
+  min-height: calc(100vh - 52px);
+  padding: 16px;
+}
+
+/* ── Two-Panel Layout ── */
+.study-body,
+.browse-body,
+.practice-body {
+  display: flex;
+  gap: 24px;
+  flex-wrap: wrap;
+}
+
+/* ── Board Container ── (Chessground needs explicit dimensions) */
+.board-container,
+#study-board-container,
+#practice-board-container,
+.detail-board-container {
+  width: 400px;
+  height: 400px;
+}
+
+cg-board {
+  width: 400px;
+  height: 400px;
+}
+
+.detail-board-container,
+.detail-board-container cg-board {
+  width: 240px;
+  height: 240px;
+}
+
+/* ── Buttons ── */
+button {
+  padding: 8px 16px;
+  font-size: 14px;
+  font-family: var(--font-main);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+button:hover {
+  background: var(--bg-hover);
+  border-color: var(--text-secondary);
+}
+
+button.danger {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+button.danger:hover {
+  background: var(--danger);
+  color: #fff;
+}
+
+button.primary {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+button.primary:hover {
+  background: var(--accent-hover);
+}
+
+/* ── Inputs ── */
+input[type="text"],
+input[type="search"],
+textarea,
+select {
+  padding: 6px 10px;
+  font-size: 14px;
+  font-family: var(--font-main);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+input:focus,
+textarea:focus,
+select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* ── Study Page ── */
+.study-page {}
+
+.study-board-area {}
+
+.study-board-controls {
+  margin-top: 8px;
+  display: flex;
+  gap: 8px;
+}
+
+.mark-start-btn {
+  margin-top: 8px;
+  display: block;
+}
+
+.study-status {
+  margin-top: 8px;
+  padding: 8px;
+  background: var(--bg-surface);
+  border-radius: 4px;
+  min-height: 20px;
+  font-size: 13px;
+}
+
+.study-sidebar {
+  min-width: 280px;
+  max-width: 400px;
+}
+
+.color-selector {
+  margin-bottom: 12px;
+}
+
+.color-selector label {
+  margin-right: 12px;
+  cursor: pointer;
+}
+
+.study-move-list {
+  min-height: 80px;
+  max-height: 300px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px;
+  margin: 8px 0;
+  background: var(--bg-secondary);
+  font-family: var(--font-mono);
+  font-size: 14px;
+  line-height: 1.8;
+}
+
+.setup-move {
+  color: var(--text-secondary);
+  opacity: 0.6;
+}
+
+.start-divider {
+  color: var(--accent);
+  font-weight: bold;
+  margin: 4px 0;
+  font-family: var(--font-main);
+  font-size: 12px;
+}
+
+.active-move {
+  cursor: pointer;
+}
+
+.active-move:hover {
+  text-decoration: underline;
+}
+
+.edit-reason-btn {
+  cursor: pointer;
+  border: none;
+  background: none;
+  font-size: 14px;
+  padding: 0 2px;
+  color: var(--text-secondary);
+}
+
+.edit-reason-btn:hover {
+  color: var(--accent);
+}
+
+.move-list-header {
+  font-weight: bold;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.reason-area {
+  margin: 8px 0;
+}
+
+.reason-area label {
+  display: block;
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+}
+
+.reason-area input {
+  width: 100%;
+}
+
+.study-actions {
+  margin-top: 12px;
+  display: flex;
+  gap: 8px;
+}
+
+/* ── Practice Page ── */
+.practice-page {
+  position: relative;
+}
+
+.practice-sidebar {
+  min-width: 280px;
+  max-width: 400px;
+}
+
+.practice-message {
+  padding: 8px 12px;
+  background: var(--bg-surface);
+  border-radius: 4px;
+  margin-top: 8px;
+  font-size: 13px;
+}
+
+.line-result-overlay,
+.session-summary-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  z-index: 100;
+  background: var(--bg-secondary);
+  padding: 16px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+
+/* ── Browse Page ── */
+.browse-page {}
+
+.browse-tree-panel {
+  min-width: 320px;
+  max-width: 500px;
+  max-height: calc(100vh - 100px);
+  overflow-y: auto;
+}
+
+.browse-search {
+  margin-bottom: 8px;
+}
+
+.browse-search input {
+  width: 100%;
+}
+
+.browse-tree {
+  min-height: 80px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px;
+  background: var(--bg-secondary);
+}
+
+.browse-detail-panel {
+  min-width: 280px;
+  max-width: 450px;
+}
+
+.tree-node {
+  padding: 3px 4px;
+  cursor: pointer;
+  border-radius: 3px;
+}
+
+.tree-node:hover {
+  background: var(--bg-hover);
+}
+
+.tree-node.selected {
+  background: var(--bg-surface);
+  border-left: 3px solid var(--accent);
+  padding-left: 6px;
+}
+
+.tree-toggle {
+  cursor: pointer;
+  font-size: 11px;
+  display: inline-block;
+  width: 16px;
+  color: var(--text-secondary);
+}
+
+.tree-children {
+  margin-left: 20px;
+}
+
+.tree-empty {
+  color: var(--text-secondary);
+  padding: 12px;
+  font-style: italic;
+}
+
+.node-name {
+  color: var(--accent);
+  font-style: italic;
+  margin-left: 4px;
+}
+
+.move-white {
+  color: var(--white-move);
+}
+
+.move-black {
+  color: var(--black-move);
+}
+
+.detail-empty {
+  color: var(--text-secondary);
+  padding: 16px;
+  font-style: italic;
+}
+
+.detail-fields {
+  margin-top: 8px;
+}
+
+.detail-fields label {
+  display: block;
+  margin-top: 10px;
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.detail-fields input[type="text"],
+.detail-fields textarea {
+  width: 100%;
+  margin-top: 4px;
+}
+
+.detail-full-name {
+  padding: 6px 8px;
+  background: var(--bg-secondary);
+  border-radius: 4px;
+  font-size: 13px;
+  margin-top: 4px;
+}
+
+.detail-reason {
+  padding: 6px 8px;
+  background: var(--bg-secondary);
+  border-radius: 4px;
+  font-size: 13px;
+  margin-top: 4px;
+}
+
+.detail-stats {
+  margin-top: 12px;
+  display: flex;
+  gap: 20px;
+  font-size: 13px;
+}
+
+.detail-actions {
+  margin-top: 16px;
+  display: flex;
+  gap: 8px;
+}
+
+/* ── Manage Page ── */
+.manage-page {
+  max-width: 700px;
+}
+
+.manage-section {
+  margin-bottom: 24px;
+  padding: 16px;
+  background: var(--bg-surface);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+
+.manage-section h2 {
+  font-size: 16px;
+  margin-bottom: 12px;
+  color: var(--text-primary);
+}
+
+.manage-actions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.manage-stats {
+  list-style: none;
+  line-height: 2;
+}
+
+.manage-stats li::before {
+  content: '•';
+  margin-right: 8px;
+  color: var(--accent);
+}
+
+.manage-status {
+  margin-top: 12px;
+  padding: 8px;
+  border-radius: 4px;
+  font-size: 13px;
+  min-height: 20px;
+}
+
+.manage-settings label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+  font-size: 14px;
+}
+
+.manage-settings select,
+.manage-settings input[type="number"] {
+  width: 120px;
+}
+
+/* ── Board Square Highlights ── */
+.cg-board .hint {
+  background-color: rgba(22, 155, 0, 0.5);
+  border-radius: 50%;
+}
+
+.cg-board .error {
+  background-color: rgba(204, 0, 0, 0.5);
+}
+
+/* ── Responsive adjustments ── */
+@media (max-width: 768px) {
+  .board-container,
+  #study-board-container,
+  #practice-board-container,
+  cg-board {
+    width: 320px;
+    height: 320px;
+  }
+
+  .study-body,
+  .browse-body,
+  .practice-body {
+    flex-direction: column;
+  }
+
+  .study-sidebar,
+  .practice-sidebar,
+  .browse-tree-panel,
+  .browse-detail-panel {
+    max-width: 100%;
+    min-width: auto;
+  }
+
+  nav a {
+    padding: 10px 12px;
+    font-size: 12px;
+  }
+}
+
+/* ── Move Number ── */
+.move-number {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+/* ── Promotion Dialog ── */
+.promotion-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;
+}
+
+.promotion-overlay button {
+  padding: 8px 14px;
+  font-size: 16px;
+  cursor: pointer;
+}

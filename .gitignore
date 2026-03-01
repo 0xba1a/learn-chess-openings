@@ -34,7 +34,7 @@ logs/
 coverage/
 .pytest_cache/
 htmlcov/
-test_doc1.html
+test_doc*.html
 test_doc1_playwright.mjs
 
 # Lichess data files (too large to commit)
