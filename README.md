@@ -1,108 +1,71 @@
 # ♟ Chess Openings Trainer
 
-A web application that helps users master chess openings through interactive lessons and spaced-repetition puzzles. Lessons are generated from the [Lichess open database](https://database.lichess.org/) and enriched with AI-powered explanations. Progress is tracked over time, surfacing strengths, weaknesses, and improvement trends in a personal dashboard.
+A build-time pipeline that constructs a filtered opening DAG from the [Lichess open database](https://database.lichess.org/), enriches every position with AI-generated explanations, and produces structured puzzles — all stored in PostgreSQL, ready to power a future study application.
 
 ---
 
 ## Table of Contents
 
-1. [Features](#features)
-2. [Architecture Overview](#architecture-overview)
+1. [What This Does](#what-this-does)
+2. [Architecture](#architecture)
 3. [Tech Stack](#tech-stack)
 4. [Project Structure](#project-structure)
-5. [Data Pipeline](#data-pipeline)
-6. [Core Modules](#core-modules)
-7. [Database Schema](#database-schema)
-8. [API Design](#api-design)
-9. [Getting Started](#getting-started)
-10. [Environment Variables](#environment-variables)
-11. [Scripts](#scripts)
-12. [Roadmap](#roadmap)
-13. [License](#license)
+5. [Pipeline Stages](#pipeline-stages)
+6. [Database Schema](#database-schema)
+7. [Getting Started](#getting-started)
+8. [Environment Variables](#environment-variables)
+9. [Scripts](#scripts)
+10. [Roadmap](#roadmap)
+11. [License](#license)
 
 ---
 
-## Features
+## What This Does
 
-### Interactive Lessons
-- Curated opening lines parsed from the Lichess master/rated game database.
-- AI-generated explanations (via Claude API) for every candidate move — why it's chosen, what alternatives exist, and what plans each side pursues.
-- Audio narration of move explanations using the Web Speech Synthesis API.
-- Step-through an interactive board to play through each line.
+### Opening DAG Construction
+- Parses millions of Lichess games filtered by rating band (default 1000–1600 ELO) and time control.
+- Builds a Directed Acyclic Graph (DAG) of chess positions where only moves played in ≥10% of games are kept — limiting the branching factor to 2–4 per node.
+- Detects transpositions (same position reached via different move orders) and links them.
+- Tags **anti-moves** — moves where Stockfish shows an evaluation drop >50 centipawns, explicitly taught as moves to avoid.
+- Maps positions to ECO opening names.
 
-### Spaced-Repetition Puzzles
-- After completing a lesson, the key positions are converted into recall puzzles.
-- Puzzles ask the user to find the correct move **and explain why** (typed or spoken via Web Speech Recognition API).
-- Scheduled using the **SM-2 (SuperMemo 2)** algorithm so difficult positions resurface more often and mastered positions fade to longer intervals.
+### AI-Generated Lessons
+- For every edge in the DAG, sends the position context (FEN, statistics, engine evaluation, sibling moves) to Claude API.
+- Generates structured reasoning: *why play this move*, *what the opponent wants*, *the game plan*, and *key ideas*.
+- Stored per-edge with model and prompt versioning for future regeneration.
 
-### Progress Dashboard
-- Track lesson completion, puzzle accuracy, and streak data.
-- Per-opening success heatmap (e.g. strong in the Sicilian, weak in the Caro-Kann).
-- Historical improvement curves (accuracy over time, interval growth).
-- Strength & weakness report generated periodically.
-
-### Voice Interaction
-- Users can dictate answers to puzzle explanations using the browser's SpeechRecognition API.
-- Audio cues narrate move reasoning during lessons via SpeechSynthesis.
+### Puzzle Generation
+- Creates 4–8 puzzle types per node across 5 difficulty tiers.
+- Types: best move, why this move, why not (anti-move), game plan, consequence, predict opponent, trap recognition, transposition awareness.
+- Distractors generated via LLM with heuristic fallback.
 
 ---
 
-## Architecture Overview
+## Architecture
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│                      CLIENT (SPA)                        │
-│                                                          │
-│  ┌─────────────┐  ┌──────────────┐  ┌────────────────┐   │
-│  │  Lessons UI │  │  Puzzles UI  │  │  Dashboard UI  │   │
-│  └──────┬──────┘  └──────┬───────┘  └───────┬────────┘   │
-│         │                │                  │            │
-│  ┌──────┴────────────────┴──────────────────┴──────-──┐  │
-│  │              React + React Router                  │  │
-│  │         react-chessboard  ·  chess.js              │  │
-│  │         Web Speech API (TTS + STT)                 │  │
-│  └────────────────────────┬───────────────────────────┘  │
-│                           │                              │
-└───────────────────────────┼──────────────────────────────┘
-                            │  Firebase SDK
-┌───────────────────────────┼──────────────────────────────┐
-│                     FIREBASE BACKEND                     │
-│                           │                              │
-│  ┌────────────────────────┼───────────────────────────┐  │
-│  │             Cloud Firestore (Database)             │  │
-│  │  users · lessons · puzzles · reviews · progress    │  │
-│  └────────────────────────────────────────────────────┘  │
-│                                                          │
-│  ┌────────────────────────────────────────────────────┐  │
-│  │            Firebase Authentication                 │  │
-│  │        Email/Password · Google · GitHub            │  │
-│  └────────────────────────────────────────────────────┘  │
-│                                                          │
-│  ┌────────────────────────────────────────────────────┐  │
-│  │           Cloud Functions (Node.js)                │  │
-│  │  • SM-2 scheduling engine                          │  │
-│  │  • AI explanation generator (Claude API)           │  │
-│  │  • Progress aggregation / analytics                │  │
-│  │  • Lichess PGN ingestion pipeline                  │  │
-│  └────────────────────────────────────────────────────┘  │
-│                                                          │
-│  ┌────────────────────────────────────────────────────┐  │
-│  │            Firebase Hosting (SPA)                  │  │
-│  └────────────────────────────────────────────────────┘  │
-│                                                          │
-└──────────────────────────────────────────────────────────┘
-
-┌──────────────────────────────────────────────────────────┐
-│               ONE-TIME DATA PIPELINE                     │
-│                                                          │
-│  Lichess DB (PGN) ──► Node parser ──► Claude API         │
-│                        (chess.js)      (explanations)    │
-│                            │                             │
-│                            ▼                             │
-│                     Cloud Firestore                      │
-│                  (lessons + puzzles)                     │
-└──────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────┐
+│                    BUILD-TIME PIPELINE                   │
+│                                                         │
+│  Lichess PGN → PGN Parser → Aggregator → DAG Filter    │
+│                                 ↓                       │
+│                    Transposition Detector                │
+│                                 ↓                       │
+│                    Stockfish Anti-move Tagger            │
+│                                 ↓                       │
+│                    ECO Mapper                            │
+│                                 ↓                       │
+│                    Study Plan Generator (Claude API)     │
+│                                 ↓                       │
+│                    Puzzle Generator                      │
+│                                 ↓                       │
+│                    PostgreSQL Database                   │
+│                                                         │
+│  Pipeline Orchestrator (checkpointing + progress)       │
+└─────────────────────────────────────────────────────────┘
 ```
+
+All computation happens at build time. The populated database is the deliverable — ready for a future runtime application (API + frontend + SRS engine).
 
 ---
 
@@ -110,306 +73,134 @@ A web application that helps users master chess openings through interactive les
 
 | Layer | Technology | Purpose |
 |---|---|---|
-| **Frontend Framework** | [React](https://react.dev/) (via Vite) | SPA with component-based UI |
-| **Chess Board** | [react-chessboard](https://github.com/Clariity/react-chessboard) | Interactive board visualization |
-| **Chess Logic** | [chess.js](https://github.com/jhlywa/chess.js) | Move validation, PGN/FEN parsing, game state |
-| **Spaced Repetition** | [ts-fsrs](https://github.com/open-spaced-repetition/ts-fsrs) | SM-2 / FSRS scheduling algorithm |
-| **Routing** | [React Router](https://reactrouter.com/) | Client-side navigation |
-| **Styling** | [Tailwind CSS](https://tailwindcss.com/) | Utility-first CSS framework |
-| **Charts** | [Recharts](https://recharts.org/) | Dashboard visualizations |
-| **Auth** | [Firebase Auth](https://firebase.google.com/products/auth) | User authentication (Email, Google, GitHub) |
-| **Database** | [Cloud Firestore](https://firebase.google.com/products/firestore) | NoSQL document database |
-| **Backend Logic** | [Cloud Functions](https://firebase.google.com/products/functions) | Serverless API endpoints & scheduled jobs |
-| **Hosting** | [Firebase Hosting](https://firebase.google.com/products/hosting) | CDN-backed static hosting |
-| **AI Explanations** | [Anthropic Claude API](https://docs.anthropic.com/) | Generate move explanations from positions |
-| **Voice I/O** | Web Speech API | Speech-to-text (answers) & text-to-speech (narration) |
-| **PGN Parsing** | [pgn-parser](https://github.com/mliebelt/pgn-parser) | Parse Lichess PGN database exports |
+| **Pipeline Language** | Python 3.11+ | All pipeline scripts |
+| **Chess Library** | [python-chess](https://python-chess.readthedocs.io/) | PGN parsing, FEN normalization, board state |
+| **Engine** | [Stockfish 16](https://stockfishchess.org/) + `stockfish` wrapper | Position evaluation, anti-move detection |
+| **AI Explanations** | [Anthropic Claude API](https://docs.anthropic.com/) | Generate move reasoning |
+| **Database** | [PostgreSQL 16](https://www.postgresql.org/) | DAG storage, graph queries via recursive CTEs |
+| **Logging** | [structlog](https://www.structlog.org/) | Structured JSON pipeline logging |
+| **Retry Logic** | [tenacity](https://tenacity.readthedocs.io/) | LLM API retry with exponential backoff |
 
 ---
 
 ## Project Structure
 
 ```
-chess_openings/
-├── public/                        # Static assets
-│   └── index.html
-├── src/
-│   ├── main.jsx                   # App entry point
-│   ├── App.jsx                    # Root component + router
-│   ├── components/
-│   │   ├── Board/
-│   │   │   ├── ChessBoard.jsx     # react-chessboard wrapper
-│   │   │   └── MoveHistory.jsx    # Move list sidebar
-│   │   ├── Lessons/
-│   │   │   ├── LessonList.jsx     # Browse openings catalog
-│   │   │   ├── LessonView.jsx     # Step-through lesson player
-│   │   │   └── MoveExplanation.jsx# AI explanation card + audio
-│   │   ├── Puzzles/
-│   │   │   ├── PuzzleQueue.jsx    # Daily review queue
-│   │   │   ├── PuzzleCard.jsx     # Single puzzle interaction
-│   │   │   └── AnswerInput.jsx    # Text + voice answer input
-│   │   ├── Dashboard/
-│   │   │   ├── Dashboard.jsx      # Main dashboard page
-│   │   │   ├── ProgressChart.jsx  # Accuracy over time
-│   │   │   ├── OpeningHeatmap.jsx # Per-opening strength map
-│   │   │   └── StreakTracker.jsx  # Daily streak display
-│   │   ├── Auth/
-│   │   │   ├── Login.jsx
-│   │   │   └── Signup.jsx
-│   │   └── Layout/
-│   │       ├── Navbar.jsx
-│   │       └── Sidebar.jsx
-│   ├── hooks/
-│   │   ├── useChessGame.js        # chess.js state management
-│   │   ├── useSpeech.js           # TTS + STT hook
-│   │   ├── useSpacedRepetition.js # SM-2 scheduling logic
-│   │   └── useAuth.js             # Firebase auth hook
-│   ├── services/
-│   │   ├── firebase.js            # Firebase app initialization
-│   │   ├── firestore.js           # Firestore CRUD helpers
-│   │   ├── auth.js                # Auth service layer
-│   │   └── api.js                 # Cloud Functions client
-│   ├── lib/
-│   │   ├── sm2.js                 # SM-2 algorithm implementation
-│   │   └── pgn.js                 # PGN parsing utilities
-│   ├── contexts/
-│   │   └── AuthContext.jsx        # Auth state provider
-│   └── styles/
-│       └── globals.css            # Tailwind base + custom styles
-├── functions/                     # Firebase Cloud Functions
-│   ├── package.json
-│   ├── index.js                   # Function entry points
-│   ├── src/
-│   │   ├── ingest/
-│   │   │   ├── parseLichess.js    # Stream-parse Lichess PGN files
-│   │   │   └── generateLessons.js # Send positions to Claude, store results
-│   │   ├── review/
-│   │   │   ├── scheduler.js       # SM-2 next-review calculator
-│   │   │   └── evaluator.js       # Grade user answers (with AI assist)
-│   │   ├── analytics/
-│   │   │   └── aggregate.js       # Periodic progress aggregation
-│   │   └── utils/
-│   │       └── claude.js          # Anthropic API client wrapper
-│   └── .env                       # Function-level secrets (not committed)
+learn-chess-openings/
+├── docs/
+│   └── design_document_v2.md      # Full design document
+├── pipeline/
+│   ├── pgn_parser.py              # PGN filtering + streaming move extraction
+│   ├── aggregator.py              # Memory-bounded position aggregation
+│   ├── engine_tagger.py           # Stockfish anti-move detection (parallel)
+│   ├── eco_mapper.py              # ECO code → position mapping
+│   ├── study_plan_generator.py    # LLM reasoning generation with checkpointing
+│   ├── puzzle_generator.py        # Puzzle creation from stored data
+│   └── orchestrator.py            # Pipeline stages runner
+├── db/
+│   ├── schema.sql                 # Full PostgreSQL schema
+│   └── migrations/                # Schema migrations
 ├── scripts/
-│   ├── ingest.js                  # CLI runner for Lichess ingestion
-│   └── seed.js                    # Seed Firestore with sample data
+│   ├── run_pipeline.py            # CLI entry point for pipeline
+│   └── verify_dag.py              # DAG validation checks
+├── lichess/
+│   ├── load_dataset.py            # Lichess dataset loader
+│   └── eval_db.py                 # Evaluation database utilities
+├── tests/
+│   ├── test_pgn_parser.py
+│   ├── test_aggregator.py
+│   ├── test_engine_tagger.py
+│   └── test_puzzle_generator.py
 ├── .env.example                   # Required environment variables
 ├── .gitignore
-├── firebase.json                  # Firebase project configuration
-├── firestore.rules                # Firestore security rules
-├── firestore.indexes.json         # Composite index definitions
-├── package.json
-├── vite.config.js
-├── tailwind.config.js
-├── postcss.config.js
+├── requirements.txt               # Python dependencies
+├── docker-compose.yml             # PostgreSQL setup
 └── README.md
 ```
 
 ---
 
-## Data Pipeline
+## Pipeline Stages
 
-The lesson content is generated **once** via an offline ingestion pipeline:
+The pipeline runs sequentially. Each stage is idempotent and checkpointed — it can be re-run after failure without duplicating work.
 
-### Step 1 — Download Lichess Database
-Download PGN exports from https://database.lichess.org/ (e.g., rated games ≥ 2200 Elo or master games).
-
-### Step 2 — Parse & Extract Opening Lines
+### Stage 1 — PGN Parse & Aggregate
 ```
-lichess_db.pgn
-  │
-  ▼  pgn-parser + chess.js
-  │
-  ├── Group games by ECO code / opening name
-  ├── Extract the first N moves of each main line
-  ├── Identify candidate moves at each branching point
-  └── Deduplicate transpositions
+Lichess PGN file (filtered by rating band + time control)
+    ↓
+Stream every game, extract (parent_FEN, child_FEN, move, result) tuples
+    ↓
+Aggregate move frequencies with bounded memory (flushes to DB at 100k positions)
+    ↓
+Apply 10% threshold filter → build edges table
 ```
 
-### Step 3 — Generate AI Explanations
-For each opening line and each key position, call the Claude API with a prompt like:
-
+### Stage 2 — Transposition Detection
 ```
-You are a chess instructor. Given this position (FEN: ...),
-the main move is Nf3. Explain:
-1. Why this move is the best choice in this position.
-2. What are the main alternatives and why are they weaker?
-3. What is the strategic plan after this move?
-Keep the explanation concise (3-5 sentences) and suitable for
-an intermediate player.
+Identify positions reachable via multiple move orders
+    ↓
+Store top-5 canonical paths per transposed position
 ```
 
-### Step 4 — Store in Firestore
-Each opening becomes a `lesson` document with an ordered array of positions. Each position references its explanation text and generates a corresponding `puzzle` document.
-
----
-
-## Core Modules
-
-### SM-2 Spaced Repetition Engine
-
-Each puzzle card tracks:
-
-| Field | Type | Description |
-|---|---|---|
-| `easeFactor` | `number` | Starts at 2.5; adjusted after each review |
-| `interval` | `number` | Days until next review |
-| `repetitions` | `number` | Consecutive correct answers |
-| `nextReviewDate` | `Timestamp` | When this card is next due |
-| `quality` | `number` | Last review quality grade (0–5) |
-
-**Grading scale:**
-- **5** — Perfect response, correct move + correct reasoning
-- **4** — Correct move, partial reasoning
-- **3** — Correct move, poor/no reasoning
-- **2** — Incorrect move, but recognized the right idea
-- **1** — Incorrect move, vague reasoning
-- **0** — Complete blackout
-
-The `ts-fsrs` library handles scheduling. A thin wrapper in `lib/sm2.js` maps our grading scale to the library's input format.
-
-### Voice Interaction
-
+### Stage 3 — Stockfish Analysis
 ```
-┌────────────────────┐     ┌───────────────────────┐
-│  SpeechRecognition  │────►│  Answer text (string)│
-│  (Web Speech API)   │     │  → sent for grading  │
-└────────────────────┘     └───────────────────────┘
-
-┌────────────────────┐     ┌───────────────────────┐
-│  SpeechSynthesis   │◄────│  Explanation text     │
-│  (Web Speech API)  │     │  (from lesson data)   │
-└────────────────────┘     └───────────────────────┘
+Evaluate every edge position (parent + child FEN) via Stockfish at depth 18
+    ↓
+Parallel worker pool (configurable concurrency)
+    ↓
+Flag anti-moves where eval drop > 50 centipawns
+    ↓
+Checkpoint after each batch
 ```
 
-- **STT (Speech-to-Text):** Used in puzzle mode so users can speak their reasoning. The transcript is captured and submitted alongside their chosen move.
-- **TTS (Text-to-Speech):** Used in lesson mode to narrate move explanations as the user steps through positions.
+### Stage 4 — ECO Mapping
+```
+Match FEN positions against ECO code database
+    ↓
+Assign opening names (e.g. "Sicilian Najdorf", "B90")
+```
+
+### Stage 5 — LLM Reasoning
+```
+For each edge: build context (FEN, stats, eval, siblings)
+    ↓
+Send to Claude API with structured prompt
+    ↓
+Parse + validate JSON response
+    ↓
+Store: why_play, why_not, what_opponent_wants, game_plan, key_ideas
+    ↓
+Retry with exponential backoff on failures
+    ↓
+Checkpoint per edge in pipeline_progress table
+```
+
+### Stage 6 — Puzzle Generation
+```
+For each node: derive puzzles from stored edges + reasoning
+    ↓
+8 puzzle types across 5 difficulty tiers
+    ↓
+Generate distractors (LLM with heuristic fallback)
+    ↓
+Store in puzzles table (minimum 4 per node)
+```
 
 ---
 
 ## Database Schema
 
-### Firestore Collections
+See the full schema in the [design document](docs/design_document_v2.md#41-database-schema). Key tables:
 
-#### `users/{userId}`
-```json
-{
-  "uid": "string",
-  "email": "string",
-  "displayName": "string",
-  "createdAt": "timestamp",
-  "settings": {
-    "dailyGoal": 10,
-    "voiceEnabled": true,
-    "theme": "dark"
-  }
-}
-```
-
-#### `lessons/{lessonId}`
-```json
-{
-  "id": "string",
-  "title": "Sicilian Defense: Najdorf Variation",
-  "eco": "B90",
-  "color": "black",
-  "difficulty": "intermediate",
-  "description": "string",
-  "tags": ["sicilian", "open-game", "sharp"],
-  "positions": [
-    {
-      "fen": "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1",
-      "move": "c5",
-      "moveNumber": 1,
-      "explanation": "The Sicilian Defense immediately fights for the center...",
-      "alternatives": [
-        { "move": "e5", "reason": "Solid but symmetrical..." },
-        { "move": "e6", "reason": "The French Defense..." }
-      ]
-    }
-  ],
-  "createdAt": "timestamp",
-  "totalPositions": 12
-}
-```
-
-#### `puzzles/{puzzleId}`
-```json
-{
-  "id": "string",
-  "lessonId": "string",
-  "fen": "string",
-  "correctMove": "Nf3",
-  "explanation": "string",
-  "difficulty": "intermediate",
-  "positionIndex": 3
-}
-```
-
-#### `users/{userId}/reviews/{reviewId}`
-```json
-{
-  "puzzleId": "string",
-  "lessonId": "string",
-  "easeFactor": 2.5,
-  "interval": 1,
-  "repetitions": 0,
-  "nextReviewDate": "timestamp",
-  "lastReviewDate": "timestamp",
-  "quality": 4,
-  "history": [
-    {
-      "date": "timestamp",
-      "quality": 4,
-      "moveChosen": "Nf3",
-      "answerText": "Controls the center and develops a piece...",
-      "correct": true
-    }
-  ]
-}
-```
-
-#### `users/{userId}/progress/{periodId}`
-```json
-{
-  "period": "2026-02",
-  "totalReviews": 142,
-  "correctMoves": 118,
-  "accuracy": 0.83,
-  "lessonsCompleted": 5,
-  "currentStreak": 12,
-  "longestStreak": 18,
-  "openingBreakdown": {
-    "B90": { "reviews": 30, "accuracy": 0.90 },
-    "C50": { "reviews": 22, "accuracy": 0.68 }
-  }
-}
-```
-
----
-
-## API Design
-
-### Cloud Functions Endpoints
-
-| Method | Endpoint | Description |
-|---|---|---|
-| `GET` | `/api/lessons` | List all lessons (with filters) |
-| `GET` | `/api/lessons/:id` | Get a single lesson with positions |
-| `GET` | `/api/puzzles/due` | Get user's due puzzle queue for today |
-| `POST` | `/api/puzzles/:id/review` | Submit a review (move + reasoning) |
-| `GET` | `/api/progress/summary` | Get user's progress summary |
-| `GET` | `/api/progress/openings` | Per-opening accuracy breakdown |
-| `POST` | `/api/ingest/run` | Trigger Lichess ingestion (admin only) |
-
-### Callable Functions
-
-| Function | Trigger | Description |
-|---|---|---|
-| `scheduleDailyReviews` | Pub/Sub (daily cron) | Precompute each user's daily queue |
-| `aggregateProgress` | Pub/Sub (weekly cron) | Roll up review data into progress docs |
-| `gradeAnswer` | HTTPS Callable | Send user's typed/spoken answer to Claude for semantic grading |
+| Table | Purpose |
+|---|---|
+| `nodes` | Every unique chess position (FEN, opening name, stats) |
+| `edges` | Directed moves between positions (frequency, eval, anti-move flag) |
+| `transpositions` | Positions reachable via multiple paths |
+| `node_reasoning` | LLM-generated explanations per edge |
+| `eco_codes` | Opening name reference |
+| `puzzles` | Generated puzzle definitions per node |
+| `pipeline_progress` | Checkpointing for resumable pipeline |
 
 ---
 
@@ -417,45 +208,52 @@ The `ts-fsrs` library handles scheduling. A thin wrapper in `lib/sm2.js` maps ou
 
 ### Prerequisites
 
-- Node.js ≥ 18
-- npm or yarn
-- Firebase CLI (`npm install -g firebase-tools`)
-- A Firebase project with Firestore, Auth, Functions, and Hosting enabled
-- An Anthropic API key (for lesson generation & answer grading)
+- Python 3.11+
+- PostgreSQL 16
+- Stockfish 16 (installed and accessible)
+- An Anthropic API key
 
 ### Installation
 
 ```bash
 # Clone the repository
-git clone https://github.com/<your-username>/chess_openings.git
-cd chess_openings
+git clone https://github.com/<your-username>/learn-chess-openings.git
+cd learn-chess-openings
 
-# Install frontend dependencies
-npm install
+# Create virtual environment
+python -m venv .venv
+source .venv/bin/activate
 
-# Install Cloud Functions dependencies
-cd functions && npm install && cd ..
+# Install dependencies
+pip install -r requirements.txt
 
 # Copy environment template
 cp .env.example .env
-# Edit .env with your Firebase config and API keys
+# Edit .env with your database credentials and API keys
 
-# Start the development server
-npm run dev
+# Start PostgreSQL (via Docker)
+docker compose up -d
 
-# In a separate terminal, start the Firebase emulators
-firebase emulators:start
+# Initialize database schema
+psql -h localhost -U chess -d chess_openings -f db/schema.sql
 ```
 
-### Running the Ingestion Pipeline
+### Running the Pipeline
 
 ```bash
 # Download a Lichess PGN file first (see https://database.lichess.org/)
-# Then run the ingestion script:
-node scripts/ingest.js --input ./data/lichess_db.pgn --max-games 1000
 
-# Or seed with sample data for development:
-node scripts/seed.js
+# Run the full pipeline
+python scripts/run_pipeline.py --pgn data/lichess_db.pgn
+
+# Or run individual stages
+python scripts/run_pipeline.py --pgn data/lichess_db.pgn --stage pgn_parse
+python scripts/run_pipeline.py --stage stockfish
+python scripts/run_pipeline.py --stage llm_reasoning
+python scripts/run_pipeline.py --stage puzzles
+
+# Verify the DAG after building
+python scripts/verify_dag.py
 ```
 
 ---
@@ -465,16 +263,22 @@ node scripts/seed.js
 Create a `.env` file in the project root (see `.env.example`):
 
 ```env
-# Firebase Configuration
-VITE_FIREBASE_API_KEY=your_api_key
-VITE_FIREBASE_AUTH_DOMAIN=your_project.firebaseapp.com
-VITE_FIREBASE_PROJECT_ID=your_project_id
-VITE_FIREBASE_STORAGE_BUCKET=your_project.appspot.com
-VITE_FIREBASE_MESSAGING_SENDER_ID=your_sender_id
-VITE_FIREBASE_APP_ID=your_app_id
+# PostgreSQL
+DATABASE_URL=postgresql://chess:password@localhost:5432/chess_openings
 
-# Anthropic API (used in Cloud Functions & ingestion scripts)
+# Stockfish
+STOCKFISH_PATH=/usr/local/bin/stockfish
+
+# Anthropic API
 ANTHROPIC_API_KEY=sk-ant-...
+
+# Pipeline config (optional)
+MIN_RATING=1000
+MAX_RATING=1600
+MOVE_THRESHOLD=0.10
+STOCKFISH_DEPTH=18
+STOCKFISH_WORKERS=4
+MAX_MOVE_DEPTH=25
 ```
 
 ---
@@ -483,35 +287,39 @@ ANTHROPIC_API_KEY=sk-ant-...
 
 | Command | Description |
 |---|---|
-| `npm run dev` | Start Vite dev server |
-| `npm run build` | Production build |
-| `npm run preview` | Preview production build locally |
-| `npm run lint` | Run ESLint |
-| `npm run deploy` | Build + deploy to Firebase Hosting |
-| `npm run deploy:functions` | Deploy Cloud Functions only |
-| `npm run ingest` | Run Lichess PGN ingestion pipeline |
-| `npm run seed` | Seed Firestore with sample data |
+| `python scripts/run_pipeline.py --pgn <file>` | Run full pipeline on a PGN file |
+| `python scripts/run_pipeline.py --stage <name>` | Run a single pipeline stage |
+| `python scripts/verify_dag.py` | Validate DAG integrity |
 
 ---
 
 ## Roadmap
 
-- [x] Project architecture & README
-- [ ] Firebase project setup & configuration
-- [ ] Authentication (Email, Google, GitHub)
-- [ ] Lichess PGN ingestion pipeline
-- [ ] Claude API integration for lesson generation
-- [ ] Lesson browser & interactive board player
-- [ ] Audio narration (TTS) for lessons
-- [ ] Puzzle engine with SM-2 scheduling
-- [ ] Voice input (STT) for puzzle answers
-- [ ] AI-assisted answer grading
-- [ ] Progress dashboard with charts
-- [ ] Opening strength/weakness heatmap
-- [ ] Daily streak tracking & notifications
-- [ ] Mobile-responsive design
-- [ ] PWA support for offline review
-- [ ] Multiplayer opening quiz mode
+- [x] Project architecture & design document
+- [ ] **Phase 1 — DAG Builder**
+  - [ ] PostgreSQL schema setup
+  - [ ] PGN parser with rating/time control filtering
+  - [ ] Streaming aggregator with bounded memory
+  - [ ] Transposition detection
+  - [ ] Stockfish anti-move tagging (parallel)
+  - [ ] ECO code mapping
+  - [ ] DAG verification script
+- [ ] **Phase 2 — Lesson Generation**
+  - [ ] LLM prompt pipeline with position context
+  - [ ] Retry + JSON validation + checkpointing
+  - [ ] Prompt versioning
+  - [ ] Depth-first processing with cost tracking
+- [ ] **Phase 3 — Puzzle Generation**
+  - [ ] All 8 puzzle type generators
+  - [ ] Distractor generation (LLM + heuristic fallback)
+  - [ ] Difficulty tier assignment
+  - [ ] Puzzle validation script
+
+**Future phases (designed, not yet in scope):**
+- [ ] SRS engine with ripple propagation
+- [ ] FastAPI REST API
+- [ ] React frontend (DAG explorer, lessons, puzzles, dashboard)
+- [ ] Periodic update pipeline
 
 ---
 

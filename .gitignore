@@ -1,29 +1,18 @@
-# Dependencies
-node_modules/
-.pnp/
-.pnp.js
-
-# Build output
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.venv/
+venv/
+env/
+*.egg-info/
 dist/
 build/
-.vite/
-
-# Firebase
-.firebase/
-*-debug.log
-firebase-debug.log
-firestore-debug.log
-ui-debug.log
-database-debug.log
-pubsub-debug.log
 
 # Environment variables
 .env
 .env.local
-.env.development.local
-.env.test.local
-.env.production.local
-functions/.env
 
 # IDE
 .vscode/
@@ -36,17 +25,19 @@ functions/.env
 # Logs
 logs/
 *.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
 
 # Testing
 coverage/
+.pytest_cache/
+htmlcov/
 
 # Lichess data files (too large to commit)
 data/*.pgn
 data/*.zst
 
-# Misc
-.eslintcache
-*.tsbuildinfo
+# HuggingFace cache
+hf_cache/
+
+# Database dumps
+*.sql.gz
+*.dump
