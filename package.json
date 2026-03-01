@@ -1,0 +1,28 @@
+{
+  "name": "learn-chess-openings",
+  "version": "1.0.0",
+  "description": "A build-time pipeline that constructs a filtered opening DAG from the [Lichess open database](https://database.lichess.org/), enriches every position with AI-generated explanations, and produces structured puzzles — all stored in PostgreSQL, ready to power a future study application.",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs",
+    "lib": "lib"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/0xba1a/learn-chess-openings.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/0xba1a/learn-chess-openings/issues"
+  },
+  "homepage": "https://github.com/0xba1a/learn-chess-openings#readme",
+  "dependencies": {
+    "playwright": "^1.58.2"
+  }
+}

@@ -565,6 +565,8 @@ Given: currentFen, userMove (SAN), expectedLine L, moveIndex
 
 When the user plays a move that matches a different line in the DAG (case 2 above), the system must decide what to do. This is the **pivot & prompt** mechanism.
 
+**Key insight:** The current line is already *due* — that's why the user is practicing it. So the current line's mastery status is irrelevant to the pivot decision. The only question is whether the **alternative line** the user's move belongs to is mastered or not.
+
 ```
 Given: currentFen, userMove (matches edge E to childFen F),
        currentLine L (the line being practiced)
@@ -582,43 +584,23 @@ Step 2: If no alternative lines found
    → Ask user: continue on current line or stop?
    → If continue: undo the move, replay from currentFen, prompt for the expected move
 
-Step 3: If alternative lines found, evaluate SM2 states
+Step 3: If alternative lines found, check alternative line mastery
 
-   Step 3a: Check current line mastery
-     currentLineMastered = (L.repetitions >= 3 AND L.easeFactor >= 2.0)
-     // The user has reviewed this line multiple times with good recall
+   altLineMastered = (A.repetitions >= 3 AND A.easeFactor >= 2.0)
+   // If multiple alt lines, pick the best candidate first (see §9.4 selection)
 
-   Step 3b: Check alternative line urgency
-     For each alternativeLine A in alternativeLines:
-       A.isDue = (A.nextReviewDate <= Date.now())
-       A.isOverdue = (A.nextReviewDate < Date.now() - 24*60*60*1000)
-       // Overdue = more than 1 day past scheduled review
+   Case A — Alternative line IS mastered:
+     → The user already knows this variation well.
+     → Inform the user: "This variation ({alt line name}) is already mastered."
+     → Undo the user's move on the board.
+     → Prompt the user to think about the correct move for the current line.
+     → Do NOT pivot; continue practicing the current (due) line.
 
-   Step 3c: Decision matrix
-
-   ┌─────────────────────┬──────────────────────┬──────────────────────────────┐
-   │                     │ Alternative line     │ Alternative line             │
-   │                     │ IS due/overdue       │ is NOT due                   │
-   ├─────────────────────┼──────────────────────┼──────────────────────────────┤
-   │ Current line IS     │ PROMPT user:         │ ACCEPT & PIVOT silently.     │
-   │ mastered            │ "You've got this     │ Credit practice to the       │
-   │                     │ line down. There's   │ alternative line.            │
-   │                     │ a variation you      │                              │
-   │                     │ haven't reviewed in  │                              │
-   │                     │ a while — want to    │                              │
-   │                     │ try it?"             │                              │
-   │                     │                      │                              │
-   │                     │ Options:             │                              │
-   │                     │ [Try variation]      │                              │
-   │                     │ [Stay on this line]  │                              │
-   ├─────────────────────┼──────────────────────┼──────────────────────────────┤
-   │ Current line is     │ ACCEPT & PIVOT       │ ACCEPT & PIVOT silently.     │
-   │ NOT mastered        │ silently. The user   │ Credit practice to the       │
-   │                     │ is likely exploring. │ alternative line.            │
-   │                     │ Credit practice to   │                              │
-   │                     │ the alternative      │                              │
-   │                     │ line.                │                              │
-   └─────────────────────┴──────────────────────┴──────────────────────────────┘
+   Case B — Alternative line is NOT mastered:
+     → Silently pivot to the alternative line.
+     → The user's move is accepted as CORRECT.
+     → Continue the practice session along the alternative line.
+     → Credit practice to the alternative line (see §9.4 for execution details).
 ```
 
 ### 9.4 Pivot Execution
@@ -647,36 +629,35 @@ Algorithm:
 
 ### 9.5 Prompt UI
 
-When the system prompts the user about an alternative variation (§9.3, top-left cell):
+When the user plays a move matching a **mastered** alternative line (§9.3, Case A), the system informs them and redirects back to the current line:
 
 ```
 ┌──────────────────────────────────────────────┐
-│  ⚡ Alternative Variation Available           │
+│  ℹ️  Already Mastered                        │
 │                                               │
 │  You played: Nf3 (Italian Game)              │
-│  Expected:   Bb5 (Ruy Lopez)                 │
+│  But this variation is already mastered.      │
 │                                               │
-│  You've mastered the Ruy Lopez line.          │
-│  The Italian Game variation is overdue for    │
-│  review (last reviewed 5 days ago).           │
+│  Think about the correct move for the         │
+│  current line (Ruy Lopez).                    │
 │                                               │
-│  ┌─────────────────┐  ┌──────────────────┐   │
-│  │ Try Italian Game │  │ Stay on Ruy Lopez│   │
-│  └─────────────────┘  └──────────────────┘   │
+│  [The move is undone automatically]           │
 │                                               │
 └──────────────────────────────────────────────┘
 ```
+
+When the alternative line is **not mastered** (§9.3, Case B), no prompt is shown — the pivot happens silently.
 
 ### 9.6 Edge Cases in Practice
 
 | Scenario | Behavior |
 |----------|----------|
 | User plays a move not in DAG but it's a known good move | Mark incorrect — only repertoire moves are accepted. The system drills what the user has studied. |
-| Multiple alternative lines branch from the same move | Pick the most urgent (overdue) one for the pivot prompt |
+| Multiple alternative lines branch from the same move | Pick the best candidate per §9.4 selection criteria. If the selected alt line is mastered, inform and undo; if not, silently pivot. |
 | User pivots, then plays another move matching yet another line | Allow chained pivots — the practice engine always evaluates against the full DAG |
 | The pivot line has already been reviewed today | Still allow pivot, but SM2 update uses the new session's quality |
 | Line has only opponent moves left after pivot point | Auto-play remaining moves, mark as complete |
-| User declines the pivot prompt ("Stay on this line") | Undo the move from the board, wait for the user to play the expected move |
+| Alt line is mastered and move is undone | The user is expected to play the correct move for the current (due) line. If they play the same alt move again, show the same mastered message and undo again. |
 
 ### 9.7 Practice Session Summary
 
@@ -1148,7 +1129,7 @@ Drag-and-drop deploy of the repo root. No build command, no output directory con
 
 | # | Question | Notes |
 |---|----------|-------|
-| Q1 | Should the starting position always be standard, or allow custom FEN starting points? | Custom FEN would support studying from specific positions (e.g., after a specific pawn structure). For v1, standard start position only. |
+| Q1 | ~~Should the starting position always be standard, or allow custom FEN starting points?~~ | **RESOLVED:** Custom starting positions are supported in v1. The Study page has a "Mark Starting Position" button — the user makes moves to reach a position, marks it, and then records the line from there. Lines store the `rootFen` of the marked position. See Doc 2 §3.1 and Doc 6 §3.3. |
 | Q2 | How to handle transpositions during practice? If line A and line B converge at the same FEN, and the user is practicing line A, should they see line B's continuation as valid? | Current design: yes, via pivot logic. But this could be confusing if lines converge and then diverge again. |
 | Q3 | Should hints penalize the quality score more aggressively? | Current: hintUsed caps quality at 4. Could be configurable. |
 | Q4 | Maximum sensible DAG size for IndexedDB + in-browser performance? | Likely fine up to ~10,000 nodes. Tree rendering may need virtualization beyond that. |

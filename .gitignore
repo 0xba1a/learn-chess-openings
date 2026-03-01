@@ -10,6 +10,10 @@ env/
 dist/
 build/
 
+# Node
+node_modules/
+package-lock.json
+
 # Environment variables
 .env
 .env.local
@@ -30,6 +34,8 @@ logs/
 coverage/
 .pytest_cache/
 htmlcov/
+test_doc1.html
+test_doc1_playwright.mjs
 
 # Lichess data files (too large to commit)
 data/*.pgn
@@ -41,3 +47,6 @@ hf_cache/
 # Database dumps
 *.sql.gz
 *.dump
+
+# PWA / Service Worker
+sw.js.map
