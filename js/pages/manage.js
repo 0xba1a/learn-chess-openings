@@ -2,9 +2,16 @@
 //
 // Export, import, and clear repertoire data.
 // View statistics and configure settings.
+// Browse and download published studies.
 
 import * as db from '../db.js';
 import * as sm2 from '../sm2.js';
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+const STUDIES_BASE_URL = 'studies';
 
 // ---------------------------------------------------------------------------
 // Internal State
@@ -12,6 +19,9 @@ import * as sm2 from '../sm2.js';
 
 /** @type {HTMLElement|null} */
 let containerEl = null;
+
+/** @type {Array|null} Cached study catalog */
+let studyCatalog = null;
 
 // ---------------------------------------------------------------------------
 // Statistics
@@ -332,6 +342,124 @@ async function handleClearAll() {
 }
 
 // ---------------------------------------------------------------------------
+// Study Catalog
+// ---------------------------------------------------------------------------
+
+async function fetchStudyCatalog() {
+  try {
+    const resp = await fetch(`${STUDIES_BASE_URL}/manifest.json`);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const manifest = await resp.json();
+    studyCatalog = manifest.studies || [];
+    return studyCatalog;
+  } catch (err) {
+    studyCatalog = null;
+    throw err;
+  }
+}
+
+function renderStudyCatalog(studies) {
+  const el = containerEl?.querySelector('#study-catalog');
+  if (!el) return;
+
+  if (!studies || studies.length === 0) {
+    el.innerHTML = '<p class="study-catalog-empty">No published studies available.</p>';
+    return;
+  }
+
+  el.innerHTML = studies.map(study => `
+    <div class="study-card" data-study-id="${study.id}">
+      <div class="study-card-header">
+        <strong class="study-card-title">${study.title}</strong>
+        <span class="study-card-color ${study.color}">${study.color}</span>
+      </div>
+      <p class="study-card-desc">${study.description}</p>
+      <div class="study-card-meta">
+        <span>${study.lineCount} line${study.lineCount !== 1 ? 's' : ''}</span>
+        <span>by ${study.author}</span>
+        <span>${study.updatedAt}</span>
+      </div>
+      <div class="study-card-actions">
+        <button class="btn-blue btn-download-study" data-study-id="${study.id}">Download (Merge)</button>
+        <a class="btn-view-readme" href="${STUDIES_BASE_URL}/${study.id}/README.md" target="_blank">View Details</a>
+      </div>
+    </div>
+  `).join('');
+
+  // Bind download buttons
+  el.querySelectorAll('.btn-download-study').forEach(btn => {
+    btn.addEventListener('click', () => handleDownloadStudy(btn.dataset.studyId));
+  });
+}
+
+async function handleDownloadStudy(studyId) {
+  const btn = containerEl?.querySelector(`.btn-download-study[data-study-id="${studyId}"]`);
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Downloading...';
+  }
+
+  try {
+    const resp = await fetch(`${STUDIES_BASE_URL}/${studyId}/study.json`);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const parsed = await resp.json();
+
+    const errors = validateImport(parsed);
+    if (errors.length > 0) {
+      setStatus(`Study validation errors:\n${errors.join('\n')}`);
+      return;
+    }
+
+    const { nodes, edges, lines } = parsed.data;
+    let addedNodes = 0, addedEdges = 0, addedLines = 0;
+
+    for (const node of nodes) {
+      const existing = await db.get('nodes', node.fen);
+      if (!existing) {
+        await db.put('nodes', node);
+        addedNodes++;
+      }
+    }
+
+    for (const edge of edges) {
+      const existing = await db.getAllByIndex('edges', 'byParentMove', [edge.parentFen, edge.moveSan]);
+      if (existing.length === 0) {
+        const { id, ...edgeData } = edge;
+        await db.add('edges', edgeData);
+        addedEdges++;
+      }
+    }
+
+    for (const line of lines) {
+      const allLines = await db.getAll('lines');
+      const dup = allLines.find(
+        (l) => l.rootFen === line.rootFen && l.leafFen === line.leafFen && l.color === line.color
+      );
+      if (!dup) {
+        const { id, ...lineData } = line;
+        await db.add('lines', lineData);
+        addedLines++;
+      }
+    }
+
+    setStatus(`Study downloaded: ${addedNodes} new nodes, ${addedEdges} new edges, ${addedLines} new lines.`);
+
+    const stats = await loadStats();
+    renderStats(stats);
+
+    if (btn) {
+      btn.textContent = 'Downloaded ✓';
+    }
+  } catch (err) {
+    setStatus(`Download error: ${err.message}`);
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'Download (Merge)';
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Status
 // ---------------------------------------------------------------------------
 
@@ -350,6 +478,14 @@ export default {
 
     container.innerHTML = `
       <div class="manage-page">
+        <div class="manage-section">
+          <h2>Published Studies</h2>
+          <p class="manage-section-desc">Download ready-made opening repertoires to add to your collection.</p>
+          <div id="study-catalog" class="study-catalog">
+            <p class="study-catalog-loading">Loading studies...</p>
+          </div>
+        </div>
+
         <div class="manage-section">
           <h2>Data Management</h2>
           <div class="manage-actions">
@@ -388,6 +524,15 @@ export default {
 
     const settings = await loadSettings();
     renderSettings(settings);
+
+    // Load study catalog
+    try {
+      const studies = await fetchStudyCatalog();
+      renderStudyCatalog(studies);
+    } catch {
+      const el = containerEl?.querySelector('#study-catalog');
+      if (el) el.innerHTML = '<p class="study-catalog-empty">Could not load study catalog.</p>';
+    }
   },
 
   unmount() {

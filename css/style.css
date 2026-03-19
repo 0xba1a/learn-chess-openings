@@ -818,6 +818,96 @@ select:focus {
   width: 120px;
 }
 
+/* ── Study Catalog ── */
+
+.manage-section-desc {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-bottom: 12px;
+}
+
+.study-catalog {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.study-catalog-loading,
+.study-catalog-empty {
+  color: var(--text-secondary);
+  font-style: italic;
+  font-size: 13px;
+}
+
+.study-card {
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.study-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.study-card-title {
+  font-size: 15px;
+  color: var(--text-primary);
+}
+
+.study-card-color {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: 10px;
+}
+
+.study-card-color.white {
+  background: #f0f0f0;
+  color: #333;
+}
+
+.study-card-color.black {
+  background: #333;
+  color: #f0f0f0;
+}
+
+.study-card-desc {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin: 0 0 8px;
+  line-height: 1.4;
+}
+
+.study-card-meta {
+  display: flex;
+  gap: 16px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-bottom: 10px;
+}
+
+.study-card-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.btn-view-readme {
+  font-size: 12px;
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.btn-view-readme:hover {
+  text-decoration: underline;
+}
+
 /* ── Board Square Highlights ── */
 .cg-board .hint {
   background-color: rgba(22, 155, 0, 0.5);

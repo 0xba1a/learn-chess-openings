@@ -7,6 +7,7 @@ import * as dag from '../dag.js';
 import * as db from '../db.js';
 import { normalizeFen } from '../fen.js';
 import { createBoard } from '../board.js';
+import { getSessionColor } from '../utils.js';
 
 // ---------------------------------------------------------------------------
 // Internal State
@@ -451,7 +452,8 @@ async function selectNode(fen) {
   miniBoard.setInteractive(false);
 
   // Flip board
-  let boardOrientation = 'white';
+  let boardOrientation = getSessionColor();
+  miniBoard.setOrientation(boardOrientation);
   detailEl.querySelector('#btn-flip-board').addEventListener('click', () => {
     boardOrientation = boardOrientation === 'white' ? 'black' : 'white';
     if (miniBoard) miniBoard.setOrientation(boardOrientation);

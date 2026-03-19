@@ -46,3 +46,19 @@ export function formatRelativeDate(timestamp) {
 export function clone(obj) {
   return JSON.parse(JSON.stringify(obj));
 }
+
+/**
+ * Get the session-sticky board color.
+ * @returns {"white"|"black"}
+ */
+export function getSessionColor() {
+  return sessionStorage.getItem('studyColor') || 'white';
+}
+
+/**
+ * Set the session-sticky board color.
+ * @param {"white"|"black"} color
+ */
+export function setSessionColor(color) {
+  sessionStorage.setItem('studyColor', color);
+}

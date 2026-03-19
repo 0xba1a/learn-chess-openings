@@ -7,6 +7,7 @@
 import * as dag from '../dag.js';
 import { normalizeFen } from '../fen.js';
 import { createBoard } from '../board.js';
+import { getSessionColor, setSessionColor } from '../utils.js';
 
 // ---------------------------------------------------------------------------
 // Internal State
@@ -383,6 +384,7 @@ function handleClear() {
 
 function handleColorChange(color) {
   studyColor = color;
+  setSessionColor(color);
   if (board) {
     board.setOrientation(color);
   }
@@ -414,7 +416,7 @@ export default {
    */
   mount(container, params = {}) {
     containerEl = container;
-    studyColor = params.color || 'white';
+    studyColor = params.color || getSessionColor();
     startingFen = params.fen || 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
     setupMoves = [];
     moves = [];

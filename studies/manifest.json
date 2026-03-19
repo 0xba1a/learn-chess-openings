@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "updatedAt": "2026-03-19",
+  "studies": [
+    {
+      "id": "italian-game",
+      "title": "Italian Game",
+      "description": "Complete White repertoire for the Italian Game (1.e4 e5 2.Nf3 Nc6 3.Bc4), covering the Giuoco Piano, Evans Gambit, and common Black responses.",
+      "color": "white",
+      "lineCount": 3,
+      "author": "0xba1a",
+      "updatedAt": "2026-03-19"
+    },
+    {
+      "id": "scandinavian-defence-modern-variation",
+      "title": "Scandinavian Defence - Modern Variation",
+      "description": "Consolidation of traps from Remote Chess Academy YouTube Channel. Video Link: https://www.youtube.com/watch?v=XUNKncCvtiU&t=7s",
+      "color": "black",
+      "lineCount": 14,
+      "author": "0xba1a",
+      "updatedAt": "2026-03-19"
+    }
+  ]
+}
