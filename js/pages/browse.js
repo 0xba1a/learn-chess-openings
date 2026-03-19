@@ -247,6 +247,7 @@ async function selectNode(fen) {
       </div>
 
       <div class="detail-actions">
+        <button id="btn-study-from-here">Study from Here</button>
         <button id="btn-practice-subtree">Practice Subtree</button>
         <button id="btn-delete-subtree" class="danger">Delete Subtree</button>
       </div>
@@ -287,6 +288,15 @@ async function selectNode(fen) {
     if (node) {
       node.notes = notesEl.value;
       await db.put('nodes', node);
+    }
+  });
+
+  // Study from Here
+  detailEl.querySelector('#btn-study-from-here').addEventListener('click', () => {
+    if (navigateFn) {
+      navigateFn(`#/study?fen=${encodeURIComponent(fen)}`);
+    } else {
+      window.location.hash = `#/study?fen=${encodeURIComponent(fen)}`;
     }
   });
 
