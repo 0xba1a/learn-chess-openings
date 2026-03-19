@@ -327,8 +327,24 @@ async function handleSave() {
     await dag.addLine(startingFen, moveSans, studyColor, reasonList);
     setStatus('Line saved!');
 
-    // Reset
-    handleClear();
+    // Reset to starting position (keep setup moves and startingFen)
+    moves = [];
+    reasons = [];
+    undoStack = [];
+
+    if (board) {
+      board.setPosition(startingFen);
+      board.setOrientation(studyColor);
+    }
+
+    renderMoveList();
+
+    const inputEl = containerEl?.querySelector('#study-reason-input');
+    if (inputEl) {
+      inputEl.value = '';
+      inputEl.dataset.idx = '';
+      inputEl.placeholder = 'Select a move to add a reason...';
+    }
   } catch (err) {
     setStatus(`Error saving line: ${err.message}`);
   }

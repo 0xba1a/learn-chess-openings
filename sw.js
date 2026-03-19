@@ -1,7 +1,7 @@
 // sw.js — Service Worker for Chess Opening Trainer
 // Strategy: Cache-first for all static assets.
 
-const CACHE_VERSION = 'chess-trainer-v1.0.2';
+const CACHE_VERSION = 'chess-trainer-v1.0.3';
 
 const STATIC_ASSETS = [
   './',
