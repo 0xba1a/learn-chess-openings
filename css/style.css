@@ -674,6 +674,23 @@ select:focus {
   border: none;
 }
 
+.btn-flip-board {
+  display: block;
+  margin: 4px auto 0;
+  padding: 2px 10px;
+  font-size: 11px;
+  cursor: pointer;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.btn-flip-board:hover {
+  color: var(--text-primary);
+  background: var(--bg-primary);
+}
+
 .tree-empty {
   color: var(--text-secondary);
   padding: 40px;
@@ -715,7 +732,10 @@ select:focus {
   margin-top: 4px;
 }
 
-.detail-reason {\n  width: 100%;\n  margin-top: 4px;\n}
+.detail-reason {
+  width: 100%;
+  margin-top: 4px;
+}
 
 .detail-stats {
   margin-top: 12px;

@@ -414,6 +414,7 @@ async function selectNode(fen) {
   detailEl.innerHTML = `
     <button id="btn-close-detail" class="detail-close" title="Close">&times;</button>
     <div class="detail-board-container" id="detail-board"></div>
+    <button id="btn-flip-board" class="btn-flip-board" title="Flip board">&#x21C5; Flip</button>
     <div class="detail-fields">
       <label>Name:</label>
       <input type="text" id="detail-name" value="${(node?.name || '').replace(/"/g, '&quot;')}" placeholder="Name this position..." />
@@ -448,6 +449,13 @@ async function selectNode(fen) {
   if (miniBoard) { miniBoard.destroy(); miniBoard = null; }
   miniBoard = createBoard(boardEl, { fen, movableColor: undefined });
   miniBoard.setInteractive(false);
+
+  // Flip board
+  let boardOrientation = 'white';
+  detailEl.querySelector('#btn-flip-board').addEventListener('click', () => {
+    boardOrientation = boardOrientation === 'white' ? 'black' : 'white';
+    if (miniBoard) miniBoard.setOrientation(boardOrientation);
+  });
 
   // Close
   detailEl.querySelector('#btn-close-detail').addEventListener('click', () => {
