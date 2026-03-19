@@ -1,7 +1,7 @@
 // browse.js — Browse Page module (ES module)
 //
-// Explore the repertoire as an expandable tree. Select nodes
-// to view position details, edit names/notes, and manage subtrees.
+// Horizontal tree-map view of the repertoire.
+// Always-expanded, pannable/zoomable, click to inspect nodes.
 
 import * as dag from '../dag.js';
 import * as db from '../db.js';
@@ -21,184 +21,366 @@ let miniBoard = null;
 /** @type {string|null} Currently selected FEN */
 let selectedFen = null;
 
-/** @type {Set<string>} Expanded tree node FENs */
-let expandedNodes = new Set();
-
 /** @type {string} Search filter text */
 let searchFilter = '';
 
-/** @type {Function|null} Navigate callback (for Practice Subtree) */
+/** @type {Function|null} Navigate callback */
 let navigateFn = null;
+
+// Pan/zoom state
+let scale = 1;
+let panX = 20;
+let panY = 0;
+let isPanning = false;
+let panStartX = 0;
+let panStartY = 0;
+let panStartPanX = 0;
+let panStartPanY = 0;
+
+// Layout constants
+const NODE_W = 80;
+const NODE_H = 30;
+const H_GAP = 40;
+const V_GAP = 6;
 
 // ---------------------------------------------------------------------------
 // Move numbering helper
 // ---------------------------------------------------------------------------
 
-/**
- * Compute the move label for a given tree depth.
- * depth 1 = move 1 (white), depth 2 = move 1 (black), depth 3 = move 2 (white), etc.
- *
- * @param {number} depth — 1-based depth from root
- * @param {string} moveSan — SAN notation
- * @returns {string}
- */
 function moveLabel(depth, moveSan) {
   const moveNum = Math.ceil(depth / 2);
   const isWhite = depth % 2 === 1;
-  if (isWhite) {
-    return `${moveNum}. ${moveSan}`;
-  } else {
-    return `${moveNum}...${moveSan}`;
-  }
+  if (isWhite) return `${moveNum}.${moveSan}`;
+  return `${moveNum}...${moveSan}`;
 }
 
 // ---------------------------------------------------------------------------
-// Tree Rendering
+// Build tree data structure (always fully expanded)
 // ---------------------------------------------------------------------------
 
-/**
- * Build tree HTML for a node and its expanded children (recursive).
- */
-async function renderTreeNode(fen, depth, matchingFens) {
+async function buildTreeData(fen, depth, visited) {
+  if (visited.has(fen)) return null; // prevent cycles
+  visited.add(fen);
+
   const node = await db.get('nodes', fen);
   const children = await dag.getChildren(fen);
-  const hasChildren = children.length > 0;
-  const isExpanded = expandedNodes.has(fen);
 
-  // If search filter is active, skip non-matching subtrees
-  if (matchingFens && !matchingFens.has(fen)) {
-    // Check if any descendant matches
-    let hasMatchingDesc = false;
-    if (hasChildren) {
-      for (const child of children) {
-        if (matchingFens.has(child.childFen)) {
-          hasMatchingDesc = true;
-          break;
-        }
-      }
-    }
-    if (!hasMatchingDesc) return '';
-  }
-
-  // For root node, get the parent edge to show the arriving move
   let parentEdge = null;
   if (depth > 0) {
     const incoming = await db.getAllByIndex('edges', 'byChild', fen);
     if (incoming.length > 0) {
-      parentEdge = incoming.reduce((earliest, e) =>
-        e.createdAt < earliest.createdAt ? e : earliest
-      );
+      parentEdge = incoming.reduce((e, c) => (c.createdAt < e.createdAt ? c : e));
     }
   }
-
-  const nodeName = node?.name || '';
-  const nameDisplay = nodeName ? ` <span class="node-name">"${nodeName}"</span>` : '';
 
   let label;
   if (depth === 0) {
-    label = 'Start Position';
+    label = 'Start';
   } else if (parentEdge) {
-    const colorClass = parentEdge.color === 'white' ? 'move-white' : 'move-black';
-    label = `<span class="${colorClass}">${moveLabel(depth, parentEdge.moveSan)}</span>${nameDisplay}`;
+    label = moveLabel(depth, parentEdge.moveSan);
   } else {
-    label = fen.substring(0, 20) + '...';
+    label = '?';
   }
 
-  const toggleIcon = hasChildren ? (isExpanded ? '▼' : '►') : '&nbsp;&nbsp;';
-  const selectedClass = selectedFen === fen ? 'selected' : '';
+  const color = parentEdge?.color || null;
+  const name = node?.name || '';
 
-  let html = `<div class="tree-node ${selectedClass}" data-fen="${fen}" data-depth="${depth}">`;
-  html += `<span class="tree-toggle" data-fen="${fen}">${toggleIcon}</span> `;
-  html += `<span class="tree-label" data-fen="${fen}">${label}</span>`;
-  html += `</div>`;
+  const childNodes = [];
+  for (const edge of children) {
+    const child = await buildTreeData(edge.childFen, depth + 1, visited);
+    if (child) childNodes.push(child);
+  }
 
-  // Render children if expanded
-  if (isExpanded && hasChildren) {
-    html += `<div class="tree-children" data-parent="${fen}">`;
-    for (const child of children) {
-      html += await renderTreeNode(child.childFen, depth + 1, matchingFens);
+  return { fen, label, name, color, depth, children: childNodes };
+}
+
+// ---------------------------------------------------------------------------
+// Layout algorithm — assign (x, y) to each node
+// ---------------------------------------------------------------------------
+
+function layoutTree(node, x, yRef) {
+  if (node.children.length === 0) {
+    node.x = x;
+    node.y = yRef.current;
+    node.w = NODE_W;
+    node.h = NODE_H;
+    yRef.current += NODE_H + V_GAP;
+    return;
+  }
+
+  const childX = x + NODE_W + H_GAP;
+  const firstChildY = yRef.current;
+
+  for (const child of node.children) {
+    layoutTree(child, childX, yRef);
+  }
+
+  const lastChild = node.children[node.children.length - 1];
+  const childTop = node.children[0].y;
+  const childBottom = lastChild.y + lastChild.h;
+
+  node.x = x;
+  node.y = childTop + (childBottom - childTop) / 2 - NODE_H / 2;
+  node.w = NODE_W;
+  node.h = NODE_H;
+}
+
+// ---------------------------------------------------------------------------
+// Search — collect matching FENs + ancestors
+// ---------------------------------------------------------------------------
+
+async function getMatchingFens(filter) {
+  if (!filter.trim()) return null;
+  const matching = new Set();
+  const allNodes = await db.getAll('nodes');
+  const lower = filter.toLowerCase();
+  for (const n of allNodes) {
+    if (n.name && n.name.toLowerCase().includes(lower)) {
+      matching.add(n.fen);
+      let cur = n.fen;
+      for (;;) {
+        const inc = await db.getAllByIndex('edges', 'byChild', cur);
+        if (inc.length === 0) break;
+        const pe = inc.reduce((a, b) => (b.createdAt < a.createdAt ? b : a));
+        matching.add(pe.parentFen);
+        cur = pe.parentFen;
+      }
     }
+  }
+  return matching.size > 0 ? matching : null;
+}
+
+function filterTree(node, matchingFens) {
+  if (!matchingFens) return node;
+  const filteredChildren = [];
+  for (const child of node.children) {
+    const fc = filterTree(child, matchingFens);
+    if (fc) filteredChildren.push(fc);
+  }
+  if (matchingFens.has(node.fen) || filteredChildren.length > 0) {
+    return { ...node, children: filteredChildren };
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Render tree as HTML nodes + SVG connectors
+// ---------------------------------------------------------------------------
+
+function collectNodes(node, list) {
+  list.push(node);
+  for (const c of node.children) collectNodes(c, list);
+}
+
+function collectEdges(node, list) {
+  for (const c of node.children) {
+    list.push({ parent: node, child: c });
+    collectEdges(c, list);
+  }
+}
+
+function renderTreeMap(roots) {
+  const allNodes = [];
+  const allEdges = [];
+  for (const root of roots) {
+    collectNodes(root, allNodes);
+    collectEdges(root, allEdges);
+  }
+
+  // Compute bounding box
+  let maxX = 0, maxY = 0;
+  for (const n of allNodes) {
+    if (n.x + n.w > maxX) maxX = n.x + n.w;
+    if (n.y + n.h > maxY) maxY = n.y + n.h;
+  }
+  const svgW = maxX + 40;
+  const svgH = maxY + 40;
+
+  // Build SVG for connector lines
+  let svg = `<svg class="tree-svg" width="${svgW}" height="${svgH}" viewBox="0 0 ${svgW} ${svgH}">`;
+  for (const { parent, child } of allEdges) {
+    const x1 = parent.x + parent.w;
+    const y1 = parent.y + parent.h / 2;
+    const x2 = child.x;
+    const y2 = child.y + child.h / 2;
+    const mx = x1 + (x2 - x1) * 0.5;
+    svg += `<path d="M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}" />`;
+  }
+  svg += '</svg>';
+
+  // Build node elements
+  let html = svg;
+  for (const n of allNodes) {
+    const isSelected = n.fen === selectedFen;
+    const isMatch = searchFilter && n.name?.toLowerCase().includes(searchFilter.toLowerCase());
+    const isWhite = n.color === 'white';
+    const isBlack = n.color === 'black';
+
+    let cls = 'tree-pill';
+    if (isSelected) cls += ' selected';
+    if (isMatch) cls += ' search-match';
+    if (n.depth === 0) cls += ' root-node';
+    else if (isWhite) cls += ' white-move';
+    else if (isBlack) cls += ' black-move';
+
+    const nameBadge = n.name ? `<span class="pill-name" title="${n.name}">${n.name}</span>` : '';
+    const childCount = n.children.length;
+    const badge = childCount > 1 ? `<span class="pill-branch">${childCount}</span>` : '';
+
+    html += `<div class="${cls}" data-fen="${n.fen}" style="left:${n.x}px;top:${n.y}px;width:${n.w}px;height:${n.h}px;">`;
+    html += `<span class="pill-label">${n.label}</span>`;
+    html += badge;
+    html += nameBadge;
     html += '</div>';
   }
 
-  return html;
+  return { html, svgW, svgH };
 }
 
-/**
- * Full tree render from roots.
- */
+// ---------------------------------------------------------------------------
+// Full tree render
+// ---------------------------------------------------------------------------
+
 async function renderTree() {
   const treeEl = containerEl?.querySelector('#browse-tree');
   if (!treeEl) return;
 
   const roots = await dag.getRoots();
 
-  // If search filter, find matching FENs
-  let matchingFens = null;
-  if (searchFilter.trim()) {
-    matchingFens = new Set();
-    const allNodes = await db.getAll('nodes');
-    const lowerFilter = searchFilter.toLowerCase();
-    for (const node of allNodes) {
-      if (node.name && node.name.toLowerCase().includes(lowerFilter)) {
-        matchingFens.add(node.fen);
-        // Add ancestors to matching set
-        let current = node.fen;
-        // eslint-disable-next-line no-constant-condition
-        while (true) {
-          const incoming = await db.getAllByIndex('edges', 'byChild', current);
-          if (incoming.length === 0) break;
-          const parentEdge = incoming.reduce((earliest, e) =>
-            e.createdAt < earliest.createdAt ? e : earliest
-          );
-          matchingFens.add(parentEdge.parentFen);
-          expandedNodes.add(parentEdge.parentFen);
-          current = parentEdge.parentFen;
-        }
-      }
-    }
-    if (matchingFens.size === 0) {
-      treeEl.innerHTML = '<div class="tree-empty">No matching positions found.</div>';
-      return;
-    }
-  }
-
   if (roots.length === 0) {
     treeEl.innerHTML = '<div class="tree-empty">No repertoire data yet. Add lines on the Study page.</div>';
     return;
   }
 
-  let html = '';
+  // Build all trees
+  const trees = [];
   for (const root of roots) {
-    html += await renderTreeNode(root.fen, 0, matchingFens);
+    const tree = await buildTreeData(root.fen, 0, new Set());
+    if (tree) trees.push(tree);
   }
 
-  treeEl.innerHTML = html;
+  // Apply search filter
+  let filteredTrees = trees;
+  const matchingFens = await getMatchingFens(searchFilter);
+  if (matchingFens) {
+    filteredTrees = trees.map(t => filterTree(t, matchingFens)).filter(Boolean);
+    if (filteredTrees.length === 0) {
+      treeEl.innerHTML = '<div class="tree-empty">No matching positions found.</div>';
+      return;
+    }
+  }
 
-  // Attach event listeners
-  treeEl.querySelectorAll('.tree-toggle').forEach((el) => {
-    el.addEventListener('click', async (e) => {
-      e.stopPropagation();
-      const fen = el.dataset.fen;
-      if (expandedNodes.has(fen)) {
-        expandedNodes.delete(fen);
-      } else {
-        expandedNodes.add(fen);
-      }
-      await renderTree();
-    });
-  });
+  // Layout each tree (stack them vertically)
+  const yRef = { current: 10 };
+  for (const tree of filteredTrees) {
+    layoutTree(tree, 10, yRef);
+    yRef.current += 20; // gap between separate roots
+  }
 
-  treeEl.querySelectorAll('.tree-label').forEach((el) => {
+  // Render
+  const { html, svgW, svgH } = renderTreeMap(filteredTrees);
+
+  const canvas = treeEl.querySelector('.tree-canvas');
+  if (canvas) {
+    canvas.style.width = `${svgW}px`;
+    canvas.style.height = `${svgH}px`;
+    canvas.innerHTML = html;
+  } else {
+    treeEl.innerHTML = `<div class="tree-canvas" style="width:${svgW}px;height:${svgH}px;">${html}</div>`;
+  }
+
+  applyTransform();
+
+  // Event: click node
+  treeEl.querySelectorAll('.tree-pill').forEach(el => {
     el.addEventListener('click', async () => {
-      const fen = el.dataset.fen;
-      await selectNode(fen);
+      await selectNode(el.dataset.fen);
     });
   });
 }
 
 // ---------------------------------------------------------------------------
-// Position Detail (Right Panel)
+// Pan / zoom
+// ---------------------------------------------------------------------------
+
+function applyTransform() {
+  const canvas = containerEl?.querySelector('.tree-canvas');
+  if (canvas) {
+    canvas.style.transform = `translate(${panX}px, ${panY}px) scale(${scale})`;
+  }
+}
+
+function handleWheel(e) {
+  e.preventDefault();
+  const delta = e.deltaY > 0 ? -0.08 : 0.08;
+  scale = Math.max(0.2, Math.min(3, scale + delta));
+  // Update zoom display
+  const zoomLabel = containerEl?.querySelector('#zoom-level');
+  if (zoomLabel) zoomLabel.textContent = `${Math.round(scale * 100)}%`;
+  applyTransform();
+}
+
+function handleMouseDown(e) {
+  // Only pan with middle button or when clicking on the background
+  if (e.target.closest('.tree-pill')) return;
+  isPanning = true;
+  panStartX = e.clientX;
+  panStartY = e.clientY;
+  panStartPanX = panX;
+  panStartPanY = panY;
+  e.currentTarget.style.cursor = 'grabbing';
+}
+
+function handleMouseMove(e) {
+  if (!isPanning) return;
+  panX = panStartPanX + (e.clientX - panStartX);
+  panY = panStartPanY + (e.clientY - panStartY);
+  applyTransform();
+}
+
+function handleMouseUp(e) {
+  isPanning = false;
+  if (e.currentTarget) e.currentTarget.style.cursor = 'grab';
+}
+
+function zoomIn() {
+  scale = Math.min(3, scale + 0.15);
+  const zoomLabel = containerEl?.querySelector('#zoom-level');
+  if (zoomLabel) zoomLabel.textContent = `${Math.round(scale * 100)}%`;
+  applyTransform();
+}
+
+function zoomOut() {
+  scale = Math.max(0.2, scale - 0.15);
+  const zoomLabel = containerEl?.querySelector('#zoom-level');
+  if (zoomLabel) zoomLabel.textContent = `${Math.round(scale * 100)}%`;
+  applyTransform();
+}
+
+function zoomFit() {
+  const treeEl = containerEl?.querySelector('#browse-tree');
+  const canvas = containerEl?.querySelector('.tree-canvas');
+  if (!treeEl || !canvas) return;
+
+  const treeRect = treeEl.getBoundingClientRect();
+  const cw = parseFloat(canvas.style.width) || 800;
+  const ch = parseFloat(canvas.style.height) || 600;
+
+  const scaleX = (treeRect.width - 20) / cw;
+  const scaleY = (treeRect.height - 20) / ch;
+  scale = Math.min(scaleX, scaleY, 1.5);
+  scale = Math.max(0.2, scale);
+
+  panX = 10;
+  panY = Math.max(10, (treeRect.height - ch * scale) / 2);
+
+  const zoomLabel = containerEl?.querySelector('#zoom-level');
+  if (zoomLabel) zoomLabel.textContent = `${Math.round(scale * 100)}%`;
+  applyTransform();
+}
+
+// ---------------------------------------------------------------------------
+// Position Detail (slide-in panel)
 // ---------------------------------------------------------------------------
 
 async function selectNode(fen) {
@@ -212,21 +394,25 @@ async function selectNode(fen) {
   const linesThrough = await dag.getLinesBySubtree(fen);
   const fullName = await dag.getFullName(fen);
 
-  // Get arriving move reason
   let arrivingReason = '';
+  let arrivingEdge = null;
+  let arrivingReasonKey = null;
   const incomingEdges = await db.getAllByIndex('edges', 'byChild', fen);
   if (incomingEdges.length > 0) {
-    const primaryEdge = incomingEdges.reduce((earliest, e) =>
-      e.createdAt < earliest.createdAt ? e : earliest
+    arrivingEdge = incomingEdges.reduce((e, c) =>
+      c.createdAt < e.createdAt ? c : e
     );
-    // Get first reason value from reasons map
-    if (primaryEdge.reasons) {
-      const reasonValues = Object.values(primaryEdge.reasons);
-      arrivingReason = reasonValues.length > 0 ? reasonValues[0] : '';
+    if (arrivingEdge.reasons) {
+      const entries = Object.entries(arrivingEdge.reasons);
+      if (entries.length > 0) {
+        arrivingReasonKey = entries[0][0];
+        arrivingReason = entries[0][1];
+      }
     }
   }
 
   detailEl.innerHTML = `
+    <button id="btn-close-detail" class="detail-close" title="Close">&times;</button>
     <div class="detail-board-container" id="detail-board"></div>
     <div class="detail-fields">
       <label>Name:</label>
@@ -236,77 +422,107 @@ async function selectNode(fen) {
       <div id="detail-full-name" class="detail-full-name">${fullName || '(unnamed path)'}</div>
 
       <label>Notes:</label>
-      <textarea id="detail-notes" rows="3" placeholder="Add notes...">${node?.notes || ''}</textarea>
+      <textarea id="detail-notes" rows="2" placeholder="Add notes...">${node?.notes || ''}</textarea>
 
-      <label>Arriving Move Reason:</label>
-      <div id="detail-reason" class="detail-reason">${arrivingReason || '(none)'}</div>
+      <label>Reason for this move:</label>
+      <input type="text" id="detail-reason" value="${(arrivingReason || '').replace(/"/g, '&quot;')}" placeholder="${arrivingEdge ? 'Why this move?' : 'N/A (root position)'}" ${arrivingEdge ? '' : 'disabled'} />
 
       <div class="detail-stats">
-        <span>Lines through here: <strong id="detail-line-count">${linesThrough.length}</strong></span>
-        <span>Children: <strong id="detail-child-count">${children.length}</strong></span>
+        <span>Lines: <strong>${linesThrough.length}</strong></span>
+        <span>Children: <strong>${children.length}</strong></span>
       </div>
 
       <div class="detail-actions">
-        <button id="btn-study-from-here">Study from Here</button>
-        <button id="btn-practice-subtree">Practice Subtree</button>
+        <button id="btn-rename-position">Rename</button>
+        <button id="btn-study-from-here" class="primary">Study from Here</button>
+        <button id="btn-practice-subtree" class="btn-blue">Practice Subtree</button>
         <button id="btn-delete-subtree" class="danger">Delete Subtree</button>
       </div>
     </div>
   `;
 
-  // Create mini-board (read-only)
+  detailEl.classList.add('open');
+
+  // Mini-board
   const boardEl = detailEl.querySelector('#detail-board');
-  if (miniBoard) {
-    miniBoard.destroy();
-    miniBoard = null;
-  }
-  miniBoard = createBoard(boardEl, {
-    fen,
-    movableColor: undefined, // non-interactive
-  });
+  if (miniBoard) { miniBoard.destroy(); miniBoard = null; }
+  miniBoard = createBoard(boardEl, { fen, movableColor: undefined });
   miniBoard.setInteractive(false);
 
-  // Name field
+  // Close
+  detailEl.querySelector('#btn-close-detail').addEventListener('click', () => {
+    detailEl.classList.remove('open');
+    selectedFen = null;
+    renderTree();
+  });
+
+  // Name
   const nameInput = detailEl.querySelector('#detail-name');
   nameInput.addEventListener('blur', async () => {
-    const newName = nameInput.value.trim();
     if (node) {
-      node.name = newName || null;
+      node.name = nameInput.value.trim() || null;
       await db.put('nodes', node);
       await renderTree();
     }
   });
-  nameInput.addEventListener('keydown', async (e) => {
-    if (e.key === 'Enter') {
-      nameInput.blur();
+  nameInput.addEventListener('keydown', e => { if (e.key === 'Enter') nameInput.blur(); });
+
+  // Rename button
+  detailEl.querySelector('#btn-rename-position').addEventListener('click', async () => {
+    const currentName = node?.name || '';
+    const newName = prompt('Enter new name for this position:', currentName);
+    if (newName === null) return; // cancelled
+    if (node) {
+      node.name = newName.trim() || null;
+      await db.put('nodes', node);
+      nameInput.value = node.name || '';
+      const fullNameEl = detailEl.querySelector('#detail-full-name');
+      if (fullNameEl) {
+        const updatedFullName = await dag.getFullName(fen);
+        fullNameEl.textContent = updatedFullName || '(unnamed path)';
+      }
+      await renderTree();
     }
   });
 
-  // Notes field
+  // Notes
   const notesEl = detailEl.querySelector('#detail-notes');
   notesEl.addEventListener('blur', async () => {
-    if (node) {
-      node.notes = notesEl.value;
-      await db.put('nodes', node);
-    }
+    if (node) { node.notes = notesEl.value; await db.put('nodes', node); }
   });
+
+  // Reason
+  const reasonInput = detailEl.querySelector('#detail-reason');
+  if (arrivingEdge) {
+    reasonInput.addEventListener('blur', async () => {
+      const newReason = reasonInput.value.trim();
+      if (!arrivingEdge.reasons) arrivingEdge.reasons = {};
+      if (arrivingReasonKey) {
+        arrivingEdge.reasons[arrivingReasonKey] = newReason;
+      } else {
+        // No existing key — use a generic key
+        const keys = Object.keys(arrivingEdge.reasons);
+        if (keys.length > 0) {
+          arrivingEdge.reasons[keys[0]] = newReason;
+        } else {
+          arrivingEdge.reasons['_default'] = newReason;
+        }
+      }
+      await db.put('edges', arrivingEdge);
+    });
+    reasonInput.addEventListener('keydown', e => { if (e.key === 'Enter') reasonInput.blur(); });
+  }
 
   // Study from Here
   detailEl.querySelector('#btn-study-from-here').addEventListener('click', () => {
-    if (navigateFn) {
-      navigateFn(`#/study?fen=${encodeURIComponent(fen)}`);
-    } else {
-      window.location.hash = `#/study?fen=${encodeURIComponent(fen)}`;
-    }
+    const url = `#/study?fen=${encodeURIComponent(fen)}`;
+    navigateFn ? navigateFn(url) : (window.location.hash = url);
   });
 
   // Practice Subtree
   detailEl.querySelector('#btn-practice-subtree').addEventListener('click', () => {
-    if (navigateFn) {
-      navigateFn(`#/practice?fen=${encodeURIComponent(fen)}`);
-    } else {
-      window.location.hash = `#/practice?fen=${encodeURIComponent(fen)}`;
-    }
+    const url = `#/practice?fen=${encodeURIComponent(fen)}`;
+    navigateFn ? navigateFn(url) : (window.location.hash = url);
   });
 
   // Delete Subtree
@@ -314,18 +530,15 @@ async function selectNode(fen) {
     const nodeName = node?.name || fen.substring(0, 30);
     const confirmed = confirm(`Delete all positions and lines under "${nodeName}"? This cannot be undone.`);
     if (!confirmed) return;
-
     await dag.deleteSubtree(fen);
     selectedFen = null;
-    detailEl.innerHTML = '<div class="detail-empty">Node deleted. Select another position.</div>';
-    if (miniBoard) {
-      miniBoard.destroy();
-      miniBoard = null;
-    }
+    detailEl.classList.remove('open');
+    detailEl.innerHTML = '';
+    if (miniBoard) { miniBoard.destroy(); miniBoard = null; }
     await renderTree();
   });
 
-  // Re-render tree to highlight selected node
+  // Highlight selected in tree
   await renderTree();
 }
 
@@ -333,9 +546,11 @@ async function selectNode(fen) {
 // Search
 // ---------------------------------------------------------------------------
 
+let searchTimeout = null;
 function handleSearch(e) {
   searchFilter = e.target.value;
-  renderTree();
+  clearTimeout(searchTimeout);
+  searchTimeout = setTimeout(() => renderTree(), 200);
 }
 
 // ---------------------------------------------------------------------------
@@ -343,31 +558,29 @@ function handleSearch(e) {
 // ---------------------------------------------------------------------------
 
 export default {
-  /**
-   * Mount the browse page into a container.
-   * @param {HTMLElement} container
-   * @param {Object} [params={}]
-   * @param {Function} [params.navigate] — optional navigation callback
-   */
   async mount(container, params = {}) {
     containerEl = container;
     navigateFn = params.navigate || null;
     selectedFen = null;
-    expandedNodes = new Set();
     searchFilter = '';
+    scale = 1;
+    panX = 20;
+    panY = 0;
 
     container.innerHTML = `
       <div class="browse-page">
+        <div class="browse-toolbar">
+          <input type="text" id="browse-search-input" placeholder="Search by name..." />
+          <div class="zoom-controls">
+            <button id="btn-zoom-out" title="Zoom out">−</button>
+            <span id="zoom-level">100%</span>
+            <button id="btn-zoom-in" title="Zoom in">+</button>
+            <button id="btn-zoom-fit" title="Fit to view">Fit</button>
+          </div>
+        </div>
         <div class="browse-body">
-          <div class="browse-tree-panel">
-            <div class="browse-search">
-              <input type="text" id="browse-search-input" placeholder="Search by name..." />
-            </div>
-            <div id="browse-tree" class="browse-tree"></div>
-          </div>
-          <div class="browse-detail-panel" id="browse-detail">
-            <div class="detail-empty">Select a position from the tree.</div>
-          </div>
+          <div id="browse-tree" class="browse-tree-map"></div>
+          <div class="browse-detail-panel" id="browse-detail"></div>
         </div>
       </div>
     `;
@@ -375,57 +588,38 @@ export default {
     // Search
     container.querySelector('#browse-search-input').addEventListener('input', handleSearch);
 
-    // Initial tree render
+    // Zoom controls
+    container.querySelector('#btn-zoom-in').addEventListener('click', zoomIn);
+    container.querySelector('#btn-zoom-out').addEventListener('click', zoomOut);
+    container.querySelector('#btn-zoom-fit').addEventListener('click', zoomFit);
+
+    // Pan/zoom on tree area
+    const treeEl = container.querySelector('#browse-tree');
+    treeEl.addEventListener('wheel', handleWheel, { passive: false });
+    treeEl.addEventListener('mousedown', handleMouseDown);
+    treeEl.addEventListener('mousemove', handleMouseMove);
+    treeEl.addEventListener('mouseup', handleMouseUp);
+    treeEl.addEventListener('mouseleave', handleMouseUp);
+
     await renderTree();
+
+    // Auto-fit after initial render
+    requestAnimationFrame(() => zoomFit());
   },
 
-  /**
-   * Unmount the browse page.
-   */
   unmount() {
-    if (miniBoard) {
-      miniBoard.destroy();
-      miniBoard = null;
-    }
-    if (containerEl) {
-      containerEl.innerHTML = '';
-      containerEl = null;
-    }
+    if (miniBoard) { miniBoard.destroy(); miniBoard = null; }
+    if (containerEl) { containerEl.innerHTML = ''; containerEl = null; }
     selectedFen = null;
-    expandedNodes = new Set();
     searchFilter = '';
     navigateFn = null;
   },
 
-  // Expose for testing
+  // Test helpers
   _getState() {
-    return {
-      selectedFen,
-      expandedNodes: new Set(expandedNodes),
-      searchFilter,
-      miniBoard,
-    };
+    return { selectedFen, searchFilter, miniBoard, scale, panX, panY };
   },
-
-  async _selectNode(fen) {
-    await selectNode(fen);
-  },
-
-  async _toggleNode(fen) {
-    if (expandedNodes.has(fen)) {
-      expandedNodes.delete(fen);
-    } else {
-      expandedNodes.add(fen);
-    }
-    await renderTree();
-  },
-
-  async _renderTree() {
-    await renderTree();
-  },
-
-  _setSearch(text) {
-    searchFilter = text;
-    return renderTree();
-  },
+  async _selectNode(fen) { await selectNode(fen); },
+  async _renderTree() { await renderTree(); },
+  _setSearch(text) { searchFilter = text; return renderTree(); },
 };

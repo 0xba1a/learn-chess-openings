@@ -11,6 +11,6 @@ class NoCacheHandler(http.server.SimpleHTTPRequestHandler):
         super().end_headers()
 
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
-server = http.server.HTTPServer(('0.0.0.0', 8080), NoCacheHandler)
-print('Serving on http://localhost:8080 (no-cache)')
+server = http.server.HTTPServer(('0.0.0.0', 9000), NoCacheHandler)
+print('Serving on http://localhost:9000 (no-cache)')
 server.serve_forever()

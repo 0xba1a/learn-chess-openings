@@ -429,8 +429,8 @@ export default {
             <div class="study-board-controls">
               <button id="btn-undo">Undo</button>
               <button id="btn-redo">Redo</button>
+              <button id="btn-mark-start" class="btn-amber mark-start-btn">⚑ Mark Start</button>
             </div>
-            <button id="btn-mark-start" class="mark-start-btn">Mark Starting Position</button>
             <div id="study-status" class="study-status"></div>
           </div>
           <div class="study-sidebar">
@@ -446,8 +446,8 @@ export default {
               <input type="text" id="study-reason-input" placeholder="Select a move to add a reason..." />
             </div>
             <div class="study-actions">
-              <button id="btn-save-line">Save Line</button>
-              <button id="btn-clear">Clear</button>
+              <button id="btn-save-line" class="primary">Save Line</button>
+              <button id="btn-clear" class="danger">Clear</button>
             </div>
           </div>
         </div>

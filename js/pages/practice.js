@@ -158,8 +158,8 @@ function showLineResult(line, correct, total) {
         <p class="score">Score: ${score}%</p>
         <p>(${correct} / ${total} moves correct)</p>
         <div class="line-result-buttons">
-          <button id="btn-next-line">Next Line</button>
-          <button id="btn-end-practice">End Practice</button>
+          <button id="btn-next-line" class="primary">Next Line</button>
+          <button id="btn-end-practice" class="danger">End Practice</button>
         </div>
       </div>
     `;
@@ -201,7 +201,7 @@ function showSessionSummary() {
       <p>Pivots taken: ${pivotCount}</p>
       <p>Overall accuracy: ${accuracy}%</p>
       <div class="line-results">${lineRows}</div>
-      <button id="btn-practice-more">Practice More</button>
+      <button id="btn-practice-more" class="primary">Practice More</button>
     </div>
   `;
 
@@ -707,8 +707,8 @@ export default {
           <div class="practice-board">
             <div class="board-container" id="practice-board-container"></div>
             <div class="practice-controls">
-              <button id="btn-hint">Hint</button>
-              <button id="btn-skip">Skip</button>
+              <button id="btn-hint" class="btn-amber">Hint</button>
+              <button id="btn-skip" class="btn-blue">Skip</button>
             </div>
           </div>
           <div class="practice-sidebar"></div>

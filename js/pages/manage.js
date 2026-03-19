@@ -353,11 +353,11 @@ export default {
         <div class="manage-section">
           <h2>Data Management</h2>
           <div class="manage-actions">
-            <button id="btn-export">Export JSON</button>
+            <button id="btn-export" class="primary">Export JSON</button>
             <div>
               <input type="file" id="import-file" accept=".json" />
-              <button id="btn-import-merge">Import (Merge)</button>
-              <button id="btn-import-replace">Import (Replace)</button>
+              <button id="btn-import-merge" class="btn-blue">Import (Merge)</button>
+              <button id="btn-import-replace" class="btn-amber">Import (Replace)</button>
             </div>
             <button id="btn-clear-all" class="danger">Clear All</button>
           </div>
