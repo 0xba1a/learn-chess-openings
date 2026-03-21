@@ -74,6 +74,15 @@ let sessionActive = false;
 // ---------------------------------------------------------------------------
 
 function sideAtIndex(index) {
+  // Read side-to-move directly from the FEN at this index.
+  // This is always correct regardless of pivots between lines
+  // with different rootFen side-to-move.
+  if (currentLine && currentLine.fens && index < currentLine.fens.length) {
+    const parts = currentLine.fens[index].split(' ');
+    if (parts.length > 1) {
+      return parts[1] === 'b' ? 'black' : 'white';
+    }
+  }
   return index % 2 === 0 ? activeColor : opposite(activeColor);
 }
 
@@ -487,6 +496,7 @@ async function handlePivot(currentFen, userMoveSan, altEdge) {
   const allLines = await db.getAll('lines');
   const altLines = allLines.filter((l) => {
     if (l.id === currentLine.id) return false;
+    if (l.color !== userColor) return false; // Only same-color pivots
     const fenIdx = l.fens.indexOf(currentFen);
     if (fenIdx < 0 || fenIdx >= l.moves.length) return false;
     return l.moves[fenIdx] === userMoveSan;
@@ -540,7 +550,7 @@ async function handlePivot(currentFen, userMoveSan, altEdge) {
 
   // Pivot to the alt line
   currentLine = bestAlt;
-  moveIndex = altFenIdx; // Will be incremented by caller via 'continue'
+  moveIndex = altFenIdx - 1; // Caller will increment, so next iteration processes moves[altFenIdx]
 
   renderSidebar();
   setStatus('✓ Correct! (pivoted to ' + bestAlt.label + ')');
