@@ -297,61 +297,80 @@ async function drillLine(line) {
   let lastRetry = false;
 
   while (moveIndex < currentLine.moves.length && sessionActive) {
-    const side = sideAtIndex(moveIndex);
+    try {
+      const side = sideAtIndex(moveIndex);
 
-    if (side !== userColor) {
-      // Opponent's move — auto-play
-      setStatus("Opponent's move...");
-      lastRetry = false;
-      await sleep(practiceDelay);
-      const move = board.playMove(currentLine.moves[moveIndex]);
+      if (side !== userColor) {
+        // Opponent's move — auto-play
+        board.setInteractive(false);
+        setStatus("Opponent's move...");
+        lastRetry = false;
+        await sleep(practiceDelay);
 
-      // Show reason if available
-      const edges = await dag.getChildren(currentLine.fens[moveIndex]);
-      const edge = edges.find(
-        (e) => e.moveSan === currentLine.moves[moveIndex]
-      );
-      if (edge && edge.reasons && edge.reasons[currentLine.label]) {
-        setReason(edge.reasons[currentLine.label]);
+        if (!sessionActive) return; // Session ended during delay
+
+        const move = board.playMove(currentLine.moves[moveIndex]);
+
+        if (!move) {
+          // playMove failed — resync board to expected position
+          console.warn('Auto-play failed for move:', currentLine.moves[moveIndex], 'at index:', moveIndex);
+          if (moveIndex + 1 < currentLine.fens.length) {
+            board.setPosition(currentLine.fens[moveIndex + 1] + ' 0 1');
+          }
+        }
+
+        // Show reason if available
+        const edges = await dag.getChildren(currentLine.fens[moveIndex]);
+        const edge = edges.find(
+          (e) => e.moveSan === currentLine.moves[moveIndex]
+        );
+        if (edge && edge.reasons && edge.reasons[currentLine.label]) {
+          setReason(edge.reasons[currentLine.label]);
+        }
+
+        moveIndex += 1;
+        renderSidebar();
+      } else {
+        // User's move — wait for input
+        if (!lastRetry) {
+          setStatus(`Your move (${userColor})`);
+        }
+        board.clearHighlights();
+        board.setInteractive(true);
+
+        const userMove = await waitForUserMove();
+
+        if (!sessionActive) return; // Session was ended
+
+        totalUserMoves += 1;
+
+        // Evaluate move
+        const result = await evaluateMove(userMove);
+
+        if (result === 'continue') {
+          // Move was accepted (exact match or pivot)
+          moveIndex += 1;
+          lastRetry = false;
+          renderSidebar();
+        } else if (result === 'retry') {
+          // Move was wrong or mastered alt — try again
+          // Don't increment moveIndex; keep status message from evaluateMove
+          lastRetry = true;
+          renderSidebar();
+        }
       }
-
+    } catch (err) {
+      console.error('Practice loop error:', err);
+      setStatus('Error — skipping to next move');
       moveIndex += 1;
       renderSidebar();
-    } else {
-      // User's move — wait for input
-      if (!lastRetry) {
-        setStatus(`Your move (${userColor})`);
-      }
-      board.clearHighlights();
-      board.setInteractive(true);
-
-      const userMove = await waitForUserMove();
-
-      if (!sessionActive) return; // Session was ended
-
-      totalUserMoves += 1;
-
-      // Evaluate move
-      const result = await evaluateMove(userMove);
-
-      if (result === 'continue') {
-        // Move was accepted (exact match or pivot)
-        moveIndex += 1;
-        lastRetry = false;
-        renderSidebar();
-      } else if (result === 'retry') {
-        // Move was wrong or mastered alt — try again
-        // Don't increment moveIndex; keep status message from evaluateMove
-        lastRetry = true;
-        renderSidebar();
-      }
     }
   }
 
   if (!sessionActive) return;
 
   // Line complete — grade it
-  const gradedLine = pivoted ? currentLine : currentLine;
+  const gradedLine = currentLine;
   const quality = sm2.autoQuality(
     totalUserMoves,
     correctMoves,
@@ -509,6 +528,13 @@ async function handlePivot(currentFen, userMoveSan, altEdge) {
 
   // Find moveIndex in altLine
   const altFenIdx = bestAlt.fens.indexOf(altEdge.childFen);
+
+  if (altFenIdx < 0) {
+    // Child FEN not found in alt line — cannot pivot safely
+    setStatus('Valid move, but could not switch to alternative line.');
+    board.undoMove();
+    return 'retry';
+  }
 
   correctMoves += 1; // User's move was correct (in repertoire)
 
