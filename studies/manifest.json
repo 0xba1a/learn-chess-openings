@@ -19,6 +19,15 @@
       "lineCount": 14,
       "author": "0xba1a",
       "updatedAt": "2026-03-19"
+    },
+    {
+      "id": "london-system",
+      "title": "London System",
+      "description": "London System study by Remote Chess Academy. Video Link: https://www.youtube.com/watch?v=IPXBGvEqWXA",
+      "color": "white",
+      "lineCount": 10,
+      "author": "0xba1a",
+      "updatedAt": "2026-03-19"
     }
   ]
 }
