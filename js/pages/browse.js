@@ -687,13 +687,15 @@ export default {
     await renderTree();
 
     // Auto-fit after initial render
-    requestAnimationFrame(() => zoomFit());
+    requestAnimationFrame(() => {
+      zoomFit();
 
-    // Auto-select node if fen param provided
-    if (params.fen) {
-      const targetFen = decodeURIComponent(params.fen);
-      await selectNode(targetFen);
-    }
+      // Auto-select node if fen param provided (after layout is settled)
+      if (params.fen) {
+        const targetFen = normalizeFen(decodeURIComponent(params.fen));
+        selectNode(targetFen);
+      }
+    });
   },
 
   unmount() {
