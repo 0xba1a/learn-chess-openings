@@ -412,6 +412,24 @@ async function selectNode(fen) {
     }
   }
 
+  // Collect all unique tags from subtree lines
+  const subtreeTagSet = new Set();
+  for (const line of linesThrough) {
+    if (Array.isArray(line.tags)) {
+      for (const t of line.tags) subtreeTagSet.add(t);
+    }
+  }
+  const subtreeTags = [...subtreeTagSet].sort();
+
+  // Collect all existing tags for the datalist
+  const allLines = await db.getAll('lines');
+  const allTagSet = new Set();
+  for (const line of allLines) {
+    if (Array.isArray(line.tags)) {
+      for (const t of line.tags) allTagSet.add(t);
+    }
+  }
+
   detailEl.innerHTML = `
     <button id="btn-close-detail" class="detail-close" title="Close">&times;</button>
     <div class="detail-board-container" id="detail-board"></div>
@@ -432,6 +450,19 @@ async function selectNode(fen) {
       <div class="detail-stats">
         <span>Lines: <strong>${linesThrough.length}</strong></span>
         <span>Children: <strong>${children.length}</strong></span>
+      </div>
+
+      <div class="detail-tag-section">
+        <label>Subtree Tags:</label>
+        <div class="tag-chips-container" id="detail-subtree-tags">
+          ${subtreeTags.map(t => `<span class="tag-chip">${t}<button class="tag-chip-remove-subtree" data-tag="${t}" title="Remove from all subtree lines">&times;</button></span>`).join('')}
+          ${subtreeTags.length === 0 ? '<span class="tag-none">No tags</span>' : ''}
+        </div>
+        <div class="detail-tag-add">
+          <input type="text" id="detail-tag-input" list="detail-tag-list" placeholder="Add tag to subtree..." />
+          <datalist id="detail-tag-list">${[...allTagSet].sort().map(t => `<option value="${t}">`).join('')}</datalist>
+          <button id="btn-add-subtree-tag" class="btn-blue" title="Add tag to all lines in this subtree">+ Tag</button>
+        </div>
       </div>
 
       <div class="detail-actions">
@@ -546,6 +577,48 @@ async function selectNode(fen) {
     detailEl.innerHTML = '';
     if (miniBoard) { miniBoard.destroy(); miniBoard = null; }
     await renderTree();
+  });
+
+  // --- Subtree Tag management ---
+
+  // Add tag to all subtree lines
+  const addTagBtn = detailEl.querySelector('#btn-add-subtree-tag');
+  const tagInput = detailEl.querySelector('#detail-tag-input');
+  async function addSubtreeTag() {
+    const tag = tagInput.value.trim();
+    if (!tag) return;
+    const subtreeLines = await dag.getLinesBySubtree(fen);
+    for (const line of subtreeLines) {
+      if (!Array.isArray(line.tags)) line.tags = [];
+      if (!line.tags.includes(tag)) {
+        line.tags.push(tag);
+        await db.put('lines', line);
+      }
+    }
+    tagInput.value = '';
+    await selectNode(fen); // re-render detail panel
+  }
+  addTagBtn.addEventListener('click', addSubtreeTag);
+  tagInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); addSubtreeTag(); }
+  });
+
+  // Remove tag from all subtree lines
+  detailEl.querySelectorAll('.tag-chip-remove-subtree').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const tag = btn.dataset.tag;
+      const subtreeLines = await dag.getLinesBySubtree(fen);
+      for (const line of subtreeLines) {
+        if (Array.isArray(line.tags)) {
+          const idx = line.tags.indexOf(tag);
+          if (idx !== -1) {
+            line.tags.splice(idx, 1);
+            await db.put('lines', line);
+          }
+        }
+      }
+      await selectNode(fen); // re-render detail panel
+    });
   });
 
   // Highlight selected in tree

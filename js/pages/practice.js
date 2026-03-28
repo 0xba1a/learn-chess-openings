@@ -60,6 +60,9 @@ let scopeFen = null;
 /** @type {string|null} Color filter */
 let colorFilter = null;
 
+/** @type {string|null} Study tag filter */
+let studyFilter = null;
+
 /** @type {HTMLElement|null} Container element */
 let containerEl = null;
 
@@ -597,6 +600,58 @@ async function pickNextLine(action) {
 }
 
 // ---------------------------------------------------------------------------
+// Study Filter
+// ---------------------------------------------------------------------------
+
+async function populateStudyFilter() {
+  const select = containerEl?.querySelector('#study-filter-select');
+  if (!select) return;
+
+  const allLines = await db.getAll('lines');
+  const tags = new Set();
+  for (const line of allLines) {
+    if (Array.isArray(line.tags)) {
+      for (const t of line.tags) tags.add(t);
+    } else if (line.studyTag) {
+      tags.add(line.studyTag);
+    }
+  }
+
+  for (const tag of [...tags].sort()) {
+    const opt = document.createElement('option');
+    opt.value = tag;
+    opt.textContent = tag;
+    if (tag === studyFilter) opt.selected = true;
+    select.appendChild(opt);
+  }
+
+  // Update scope label
+  updateScopeLabel();
+
+  select.addEventListener('change', async () => {
+    studyFilter = select.value || null;
+    updateScopeLabel();
+
+    // Update due count
+    const dueLines = await sm2.getDueLines(scopeFen, colorFilter, studyFilter);
+    const dueCountEl = containerEl?.querySelector('#due-count');
+    if (dueCountEl) dueCountEl.textContent = `Due: ${dueLines.length} lines`;
+  });
+}
+
+function updateScopeLabel() {
+  const label = containerEl?.querySelector('.scope-label');
+  if (!label) return;
+  if (studyFilter) {
+    label.textContent = `Tag: ${studyFilter}`;
+  } else if (scopeFen) {
+    label.textContent = 'Scope: Subtree';
+  } else {
+    label.textContent = 'Scope: All Lines';
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Start Session
 // ---------------------------------------------------------------------------
 
@@ -610,7 +665,7 @@ async function startSession() {
   practiceDelay = delaySetting ? delaySetting.value : 500;
 
   // Get due lines
-  const dueLines = await sm2.getDueLines(scopeFen, colorFilter);
+  const dueLines = await sm2.getDueLines(scopeFen, colorFilter, studyFilter);
 
   if (dueLines.length === 0) {
     const sidebar = containerEl.querySelector('.practice-sidebar');
@@ -731,12 +786,18 @@ export default {
     containerEl = container;
     scopeFen = params.fen || null;
     colorFilter = params.color || null;
+    studyFilter = params.study || null;
 
     // Build page HTML
     container.innerHTML = `
       <div class="practice-page">
         <div class="practice-header">
           <span class="scope-label">Scope: All Lines</span>
+          <label class="study-filter-label">Tag:
+            <select id="study-filter-select">
+              <option value="">All Tags</option>
+            </select>
+          </label>
           <span class="due-count" id="due-count"></span>
         </div>
         <div class="practice-body">
@@ -769,8 +830,11 @@ export default {
       .querySelector('#btn-skip')
       .addEventListener('click', handleSkip);
 
+    // Populate study filter dropdown
+    await populateStudyFilter();
+
     // Show due count
-    const dueLines = await sm2.getDueLines(scopeFen, colorFilter);
+    const dueLines = await sm2.getDueLines(scopeFen, colorFilter, studyFilter);
     const dueCountEl = container.querySelector('#due-count');
     if (dueCountEl) dueCountEl.textContent = `Due: ${dueLines.length} lines`;
 
@@ -794,5 +858,6 @@ export default {
     }
     currentLine = null;
     originalLine = null;
+    studyFilter = null;
   },
 };

@@ -265,6 +265,108 @@ select:focus {
   font-size: 13px;
 }
 
+.study-tag-area {
+  margin-bottom: 8px;
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.study-tag-area label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  padding-top: 4px;
+}
+
+.study-tag-area input {
+  flex: 1;
+  min-width: 80px;
+  max-width: 160px;
+}
+
+/* --- Tag Chips --- */
+
+.tag-chips-container {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+
+.tag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 8px;
+  border-radius: 12px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.tag-chip button {
+  background: none;
+  border: none;
+  color: rgba(255,255,255,0.7);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0 2px;
+  line-height: 1;
+}
+
+.tag-chip button:hover {
+  color: #fff;
+}
+
+.tag-none {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+/* --- Browse detail tag section --- */
+
+.detail-tag-section {
+  margin: 10px 0;
+  padding: 8px;
+  background: var(--bg-secondary);
+  border-radius: 6px;
+  border: 1px solid var(--border);
+}
+
+.detail-tag-section > label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+}
+
+.detail-tag-add {
+  display: flex;
+  gap: 4px;
+  margin-top: 6px;
+  align-items: center;
+}
+
+.detail-tag-add input {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 6px;
+  font-size: 12px;
+}
+
+.detail-tag-add button {
+  font-size: 12px;
+  padding: 3px 8px;
+  white-space: nowrap;
+}
+
 .study-move-list {
   flex: 1;
   min-height: 60px;
@@ -341,6 +443,158 @@ select:focus {
   padding-bottom: 4px;
 }
 
+/* ── Board Position Editor ── */
+.board-editor {
+  display: flex;
+  gap: 16px;
+  height: calc(100vh - var(--nav-height) - 24px);
+  align-items: flex-start;
+}
+
+.editor-board-wrap {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.editor-board-container {
+  position: relative;
+}
+
+.editor-click-overlay {
+  display: none;
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 10;
+  cursor: crosshair;
+}
+
+.editor-palette {
+  margin-top: 8px;
+}
+
+.palette-row {
+  display: flex;
+  gap: 3px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.palette-piece {
+  width: 44px;
+  height: 44px;
+  position: relative;
+  cursor: pointer;
+  border: 2px solid transparent;
+  border-radius: 4px;
+  background: var(--bg-secondary);
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.palette-piece:hover {
+  border-color: var(--text-secondary);
+}
+
+.palette-piece.selected {
+  border-color: var(--accent);
+  background: var(--bg-hover);
+  box-shadow: 0 0 6px rgba(98, 153, 36, 0.4);
+}
+
+.palette-piece piece {
+  position: relative !important;
+  display: block;
+  width: 100%;
+  height: 100%;
+  background-size: cover;
+}
+
+.palette-eraser {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.eraser-icon {
+  font-size: 22px;
+  color: var(--danger);
+  font-weight: bold;
+}
+
+.editor-sidebar {
+  min-width: 180px;
+  max-width: 280px;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+}
+
+.editor-title {
+  color: var(--accent-blue);
+  font-size: 16px;
+  margin: 0;
+}
+
+.editor-hint {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
+.editor-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.editor-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.editor-radio-group,
+.editor-checkbox-group {
+  display: flex;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.editor-board-btns {
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.editor-board-btns button {
+  font-size: 12px;
+  padding: 5px 10px;
+}
+
+.editor-status {
+  padding: 6px 10px;
+  background: var(--bg-surface);
+  border-radius: 4px;
+  font-size: 13px;
+  border-left: 3px solid var(--accent-amber);
+  min-height: 28px;
+}
+
+.editor-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: auto;
+}
+
+.editor-actions button {
+  flex: 1;
+}
+
 /* ── Practice Page ── */
 .practice-page {
   position: relative;
@@ -375,6 +629,23 @@ select:focus {
 
 .scope-label {
   color: var(--text-secondary);
+}
+
+.study-filter-label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-secondary);
+  margin-left: auto;
+}
+
+.study-filter-label select {
+  padding: 3px 6px;
+  font-size: 13px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
 }
 
 .due-count {
@@ -955,6 +1226,16 @@ select:focus {
     min-width: auto;
     height: auto;
     max-height: none;
+  }
+
+  .board-editor {
+    flex-direction: column;
+    height: auto;
+  }
+
+  .editor-sidebar {
+    max-width: 100%;
+    min-width: auto;
   }
 
   nav a {

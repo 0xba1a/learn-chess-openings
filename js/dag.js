@@ -168,9 +168,10 @@ export async function generateLineName(fens, moves, color, excludeLineId) {
  * @param {string[]} moves — SAN moves from startingFen onward
  * @param {"white"|"black"} color — the side the user studies as
  * @param {string[]} reasons — parallel array of reason strings
+ * @param {string[]} [tags=[]] — optional array of tag names
  * @returns {Promise<number>} the auto-generated line id
  */
-export async function addLine(startingFen, moves, color, reasons) {
+export async function addLine(startingFen, moves, color, reasons, tags = []) {
   // Phase 1 — Walk moves, collect FENs, upsert nodes
   const chess = new Chess(startingFen);
   let previousFen = normalizeFen(startingFen);
@@ -263,6 +264,7 @@ export async function addLine(startingFen, moves, color, reasons) {
     leafFen: fens[fens.length - 1],
     fens,
     moves,
+    tags: Array.isArray(tags) ? tags : (tags ? [tags] : []),
     easeFactor: 2.5,
     interval: 0,
     repetitions: 0,

@@ -5,8 +5,10 @@
 // and saves completed lines to the DAG.
 
 import * as dag from '../dag.js';
+import * as db from '../db.js';
 import { normalizeFen } from '../fen.js';
 import { createBoard } from '../board.js';
+import { createBoardEditor } from '../board-editor.js';
 import { getSessionColor, setSessionColor } from '../utils.js';
 
 // ---------------------------------------------------------------------------
@@ -37,6 +39,12 @@ let reasons = [];
 /** @type {Array<{san: string, fen: string, reason: string}>} Redo stack */
 let undoStack = [];
 
+/** @type {Object|null} Board editor instance */
+let editorInstance = null;
+
+/** @type {string[]} Current tags for grouping lines */
+let studyTags = [];
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -48,6 +56,37 @@ function setStatus(text) {
 
 function getMovableColor() {
   return 'both'; // Study page: user plays both sides
+}
+
+function renderStudyTagChips() {
+  const el = containerEl?.querySelector('#study-tag-chips');
+  if (!el) return;
+  el.innerHTML = studyTags.map((t, i) =>
+    `<span class="tag-chip">${t}<button class="tag-chip-remove" data-idx="${i}" title="Remove">&times;</button></span>`
+  ).join('');
+  el.querySelectorAll('.tag-chip-remove').forEach(btn => {
+    btn.addEventListener('click', () => {
+      studyTags.splice(parseInt(btn.dataset.idx, 10), 1);
+      renderStudyTagChips();
+    });
+  });
+}
+
+async function populateStudyTagList() {
+  const datalist = containerEl?.querySelector('#study-tag-list');
+  if (!datalist) return;
+  const allLines = await db.getAll('lines');
+  const tags = new Set();
+  for (const line of allLines) {
+    if (Array.isArray(line.tags)) {
+      for (const t of line.tags) tags.add(t);
+    } else if (line.studyTag) {
+      tags.add(line.studyTag);
+    }
+  }
+  datalist.innerHTML = [...tags].sort()
+    .map((t) => `<option value="${t}">`)
+    .join('');
 }
 
 // ---------------------------------------------------------------------------
@@ -312,7 +351,6 @@ async function handleSave() {
   try {
     // Check for duplicate
     const normalizedStarting = normalizeFen(startingFen);
-    const db = await import('../db.js');
     const allLines = await db.getAll('lines');
     const duplicate = allLines.find(
       (l) =>
@@ -325,8 +363,8 @@ async function handleSave() {
       return;
     }
 
-    await dag.addLine(startingFen, moveSans, studyColor, reasonList);
-    setStatus('Line saved!');
+    await dag.addLine(startingFen, moveSans, studyColor, reasonList, studyTags);
+    setStatus('Line saved!' + (studyTags.length > 0 ? ` (Tags: ${studyTags.join(', ')})` : ''));
 
     // Reset to starting position (keep setup moves and startingFen)
     moves = [];
@@ -379,6 +417,64 @@ function handleClear() {
 }
 
 // ---------------------------------------------------------------------------
+// Board Editor (Set Up Position)
+// ---------------------------------------------------------------------------
+
+function openBoardEditor() {
+  if (moves.length > 0) {
+    if (!confirm('Opening the position editor will clear your current moves. Continue?')) {
+      return;
+    }
+  }
+
+  const studyBody = containerEl.querySelector('.study-body');
+  studyBody.style.display = 'none';
+
+  const editorContainer = document.createElement('div');
+  editorContainer.id = 'editor-container';
+  containerEl.querySelector('.study-page').appendChild(editorContainer);
+
+  // Start with empty board unless a custom starting position is already set
+  const isStandard = startingFen === 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+  const editorFen = isStandard ? null : startingFen;
+
+  editorInstance = createBoardEditor(editorContainer, {
+    fen: editorFen,
+    orientation: studyColor,
+    onDone: (fen) => {
+      closeEditor(editorContainer, studyBody);
+
+      // Update study state with the new position
+      startingFen = fen;
+      setupMoves = [];
+      moves = [];
+      reasons = [];
+      undoStack = [];
+
+      if (board) {
+        board.setPosition(startingFen);
+        board.setOrientation(studyColor);
+      }
+
+      renderMoveList();
+      setStatus('Custom position set. Make moves to build your line.');
+    },
+    onCancel: () => {
+      closeEditor(editorContainer, studyBody);
+    },
+  });
+}
+
+function closeEditor(editorContainer, studyBody) {
+  if (editorInstance) {
+    editorInstance.destroy();
+    editorInstance = null;
+  }
+  editorContainer.remove();
+  studyBody.style.display = '';
+}
+
+// ---------------------------------------------------------------------------
 // Color Selection
 // ---------------------------------------------------------------------------
 
@@ -422,6 +518,7 @@ export default {
     moves = [];
     reasons = [];
     undoStack = [];
+    studyTags = [];
 
     container.innerHTML = `
       <div class="study-page">
@@ -431,11 +528,18 @@ export default {
             <div class="study-board-controls">
               <button id="btn-undo">Undo</button>
               <button id="btn-redo">Redo</button>
+              <button id="btn-setup-position" class="btn-blue">⚙ Set Up Position</button>
               <button id="btn-mark-start" class="btn-amber mark-start-btn">⚑ Mark Start</button>
             </div>
             <div id="study-status" class="study-status"></div>
           </div>
           <div class="study-sidebar">
+            <div class="study-tag-area">
+              <label>Tags:</label>
+              <div class="tag-chips-container" id="study-tag-chips"></div>
+              <input type="text" id="study-tag-input" list="study-tag-list" placeholder="Add tag..." />
+              <datalist id="study-tag-list"></datalist>
+            </div>
             <div class="color-selector">
               <label>Color:</label>
               <label><input type="radio" name="study-color" value="white" ${studyColor === 'white' ? 'checked' : ''}> White</label>
@@ -476,8 +580,35 @@ export default {
     container.querySelector('#btn-undo').addEventListener('click', handleUndo);
     container.querySelector('#btn-redo').addEventListener('click', handleRedo);
     container.querySelector('#btn-mark-start').addEventListener('click', handleMarkStartingPosition);
+    container.querySelector('#btn-setup-position').addEventListener('click', openBoardEditor);
     container.querySelector('#btn-save-line').addEventListener('click', handleSave);
     container.querySelector('#btn-clear').addEventListener('click', handleClear);
+
+    // Study tag input — multi-tag chips
+    const studyTagInput = container.querySelector('#study-tag-input');
+    const tagChipsEl = container.querySelector('#study-tag-chips');
+    renderStudyTagChips();
+    studyTagInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        const val = studyTagInput.value.trim();
+        if (val && !studyTags.includes(val)) {
+          studyTags.push(val);
+          renderStudyTagChips();
+        }
+        studyTagInput.value = '';
+      }
+    });
+    // Also add on blur if there's text (selecting from datalist)
+    studyTagInput.addEventListener('change', () => {
+      const val = studyTagInput.value.trim();
+      if (val && !studyTags.includes(val)) {
+        studyTags.push(val);
+        renderStudyTagChips();
+      }
+      studyTagInput.value = '';
+    });
+    populateStudyTagList();
 
     // Reason input — save on blur or Enter
     const reasonInput = container.querySelector('#study-reason-input');
@@ -501,6 +632,10 @@ export default {
    */
   unmount() {
     document.removeEventListener('keydown', handleKeyDown);
+    if (editorInstance) {
+      editorInstance.destroy();
+      editorInstance = null;
+    }
     if (board) {
       board.destroy();
       board = null;
@@ -520,6 +655,7 @@ export default {
     return {
       studyColor,
       startingFen,
+      studyTag,
       setupMoves: [...setupMoves],
       moves: [...moves],
       reasons: [...reasons],

@@ -256,6 +256,16 @@ async function handleImport(mode) {
 
   const { nodes, edges, lines, settings, names } = parsed.data;
 
+  // Normalize lines: migrate studyTag → tags if needed
+  if (lines) {
+    for (const line of lines) {
+      if (!Array.isArray(line.tags)) {
+        line.tags = line.studyTag ? [line.studyTag] : [];
+        delete line.studyTag;
+      }
+    }
+  }
+
   try {
     if (mode === 'replace') {
       await db.clearStore('nodes');

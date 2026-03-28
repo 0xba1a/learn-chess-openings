@@ -54,9 +54,10 @@ export function sm2Update(item, quality) {
  *
  * @param {string} [subtreeFen] — if provided, only lines whose fens[] includes this
  * @param {string} [color] — "white" or "black" filter
+ * @param {string} [tag] — if provided, only lines whose tags[] includes this
  * @returns {Promise<Array>} lines sorted by most overdue first
  */
-export async function getDueLines(subtreeFen, color) {
+export async function getDueLines(subtreeFen, color, tag) {
   let lines = await db.getAllByIndexRange(
     'lines',
     'byNextReview',
@@ -69,6 +70,10 @@ export async function getDueLines(subtreeFen, color) {
 
   if (color) {
     lines = lines.filter((l) => l.color === color);
+  }
+
+  if (tag) {
+    lines = lines.filter((l) => Array.isArray(l.tags) && l.tags.includes(tag));
   }
 
   // Sort by most overdue first (lowest nextReviewDate)

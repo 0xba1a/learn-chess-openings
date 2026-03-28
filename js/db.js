@@ -1,10 +1,10 @@
 // db.js — IndexedDB wrapper (ES module)
 //
-// Database: "chess-opening-trainer", version 1
-// Stores:   nodes, edges, lines, settings
+// Database: "chess-opening-trainer", version 3
+// Stores:   nodes, edges, lines, settings, names
 
 const DB_NAME = 'chess-opening-trainer';
-const DB_VERSION = 1;
+const DB_VERSION = 3;
 
 /** @type {IDBDatabase|null} */
 let db = null;
@@ -25,15 +25,15 @@ export function openDB() {
 
     request.onupgradeneeded = (event) => {
       const database = event.target.result;
+      const oldVersion = event.oldVersion;
 
-      // --- nodes ---
-      if (!database.objectStoreNames.contains('nodes')) {
+      // --- Version 0→1: Create all stores ---
+      if (oldVersion < 1) {
+        // --- nodes ---
         const nodeStore = database.createObjectStore('nodes', { keyPath: 'fen' });
         nodeStore.createIndex('byName', 'name', { unique: false });
-      }
 
-      // --- edges ---
-      if (!database.objectStoreNames.contains('edges')) {
+        // --- edges ---
         const edgeStore = database.createObjectStore('edges', {
           keyPath: 'id',
           autoIncrement: true,
@@ -43,10 +43,8 @@ export function openDB() {
         edgeStore.createIndex('byParentMove', ['parentFen', 'moveSan'], {
           unique: true,
         });
-      }
 
-      // --- lines ---
-      if (!database.objectStoreNames.contains('lines')) {
+        // --- lines ---
         const lineStore = database.createObjectStore('lines', {
           keyPath: 'id',
           autoIncrement: true,
@@ -57,15 +55,12 @@ export function openDB() {
         });
         lineStore.createIndex('byColor', 'color', { unique: false });
         lineStore.createIndex('byRootFen', 'rootFen', { unique: false });
-      }
+        lineStore.createIndex('byTag', 'tags', { unique: false, multiEntry: true });
 
-      // --- settings ---
-      if (!database.objectStoreNames.contains('settings')) {
+        // --- settings ---
         database.createObjectStore('settings', { keyPath: 'key' });
-      }
 
-      // --- names ---
-      if (!database.objectStoreNames.contains('names')) {
+        // --- names ---
         const nameStore = database.createObjectStore('names', {
           keyPath: 'id',
           autoIncrement: true,
@@ -79,6 +74,41 @@ export function openDB() {
           unique: false,
         });
         nameStore.createIndex('bySourceFen', 'sourceFen', { unique: false });
+      }
+
+      // --- Version 1→2: Add studyTag index to lines ---
+      if (oldVersion >= 1 && oldVersion < 2) {
+        const lineStore = event.target.transaction.objectStore('lines');
+        if (!lineStore.indexNames.contains('byStudyTag')) {
+          lineStore.createIndex('byStudyTag', 'studyTag', { unique: false });
+        }
+      }
+
+      // --- Version 2→3: Migrate studyTag string to tags array ---
+      if (oldVersion >= 1 && oldVersion < 3) {
+        const lineStore = event.target.transaction.objectStore('lines');
+        // Remove old index if present
+        if (lineStore.indexNames.contains('byStudyTag')) {
+          lineStore.deleteIndex('byStudyTag');
+        }
+        // Add new multiEntry index for tags array
+        if (!lineStore.indexNames.contains('byTag')) {
+          lineStore.createIndex('byTag', 'tags', { unique: false, multiEntry: true });
+        }
+        // Migrate data: studyTag → tags
+        const cursorReq = lineStore.openCursor();
+        cursorReq.onsuccess = (e) => {
+          const cursor = e.target.result;
+          if (cursor) {
+            const record = cursor.value;
+            if (!Array.isArray(record.tags)) {
+              record.tags = record.studyTag ? [record.studyTag] : [];
+              delete record.studyTag;
+              cursor.update(record);
+            }
+            cursor.continue();
+          }
+        };
       }
     };
 
