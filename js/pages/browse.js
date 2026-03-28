@@ -688,6 +688,12 @@ export default {
 
     // Auto-fit after initial render
     requestAnimationFrame(() => zoomFit());
+
+    // Auto-select node if fen param provided
+    if (params.fen) {
+      const targetFen = decodeURIComponent(params.fen);
+      await selectNode(targetFen);
+    }
   },
 
   unmount() {

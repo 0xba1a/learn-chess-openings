@@ -619,6 +619,15 @@ select:focus {
   flex: 1;
 }
 
+.practice-sidebar-actions {
+  margin-top: 10px;
+}
+
+.practice-sidebar-actions button {
+  font-size: 12px;
+  padding: 4px 10px;
+}
+
 .practice-header {
   margin-bottom: 8px;
   display: flex;

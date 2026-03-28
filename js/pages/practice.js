@@ -128,8 +128,19 @@ function renderSidebar() {
       <div class="progress">Progress: ${userProgress}/${userMoveCount} moves</div>
       <div class="status" id="practice-status">${statusText}</div>
       <div class="reason" id="practice-reason">${reasonText}</div>
+      <div class="practice-sidebar-actions">
+        <button id="btn-browse-position" class="btn-blue" title="Open current position in Browse page (new tab)">Browse Position</button>
+      </div>
     </div>
   `;
+
+  // Browse Position — open in new tab
+  sidebar.querySelector('#btn-browse-position')?.addEventListener('click', () => {
+    if (currentLine && moveIndex < currentLine.fens.length) {
+      const fen = currentLine.fens[moveIndex];
+      window.open(`${window.location.origin}${window.location.pathname}#/browse?fen=${encodeURIComponent(fen)}`, '_blank');
+    }
+  });
 }
 
 function setStatus(text) {
@@ -170,6 +181,7 @@ function showLineResult(line, correct, total) {
         <p class="score">Score: ${score}%</p>
         <p>(${correct} / ${total} moves correct)</p>
         <div class="line-result-buttons">
+          <button id="btn-redo-line" class="btn-amber">Redo</button>
           <button id="btn-next-line" class="primary">Next Line</button>
           <button id="btn-end-practice" class="danger">End Practice</button>
         </div>
@@ -177,6 +189,10 @@ function showLineResult(line, correct, total) {
     `;
     containerEl.appendChild(overlay);
 
+    overlay.querySelector('#btn-redo-line').addEventListener('click', () => {
+      overlay.remove();
+      resolve('redo');
+    });
     overlay.querySelector('#btn-next-line').addEventListener('click', () => {
       overlay.remove();
       resolve('next');
@@ -404,7 +420,15 @@ async function drillLine(line) {
     correctMoves,
     totalUserMoves
   );
-  await pickNextLine(action);
+
+  if (action === 'redo') {
+    // Redo the same line
+    pivoted = false;
+    originalLine = null;
+    await drillLine(gradedLine);
+  } else {
+    await pickNextLine(action);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -577,7 +601,7 @@ async function pickNextLine(action) {
   // Get next due line
   let dueLines;
   try {
-    dueLines = await sm2.getDueLines(scopeFen, colorFilter);
+    dueLines = await sm2.getDueLines(scopeFen, colorFilter, studyFilter);
   } catch (e) {
     // DB may have been closed during unmount
     return;
@@ -596,7 +620,7 @@ async function pickNextLine(action) {
   pivoted = false;
   originalLine = null;
 
-  await drillLine(remaining[0]);
+  await drillLine(remaining[Math.floor(Math.random() * remaining.length)]);
 }
 
 // ---------------------------------------------------------------------------
@@ -636,6 +660,11 @@ async function populateStudyFilter() {
     const dueLines = await sm2.getDueLines(scopeFen, colorFilter, studyFilter);
     const dueCountEl = containerEl?.querySelector('#due-count');
     if (dueCountEl) dueCountEl.textContent = `Due: ${dueLines.length} lines`;
+
+    // Restart session with new filter
+    sessionActive = false;
+    awaitingUserMove = null;
+    startSession();
   });
 }
 
@@ -676,10 +705,10 @@ async function startSession() {
     return;
   }
 
-  // Start with the most overdue line
+  // Pick a random due line
   pivoted = false;
   originalLine = null;
-  await drillLine(dueLines[0]);
+  await drillLine(dueLines[Math.floor(Math.random() * dueLines.length)]);
 }
 
 // ---------------------------------------------------------------------------
