@@ -25,6 +25,9 @@ let selectedFen = null;
 /** @type {string} Search filter text */
 let searchFilter = '';
 
+/** @type {string} Tag filter (empty string = all) */
+let tagFilter = '';
+
 /** @type {Function|null} Navigate callback */
 let navigateFn = null;
 
@@ -164,6 +167,20 @@ function filterTree(node, matchingFens) {
   return null;
 }
 
+async function getTagMatchingFens(tag) {
+  if (!tag) return null;
+  const matching = new Set();
+  const allLines = await db.getAll('lines');
+  for (const line of allLines) {
+    if (Array.isArray(line.tags) && line.tags.includes(tag)) {
+      if (Array.isArray(line.fens)) {
+        for (const f of line.fens) matching.add(f);
+      }
+    }
+  }
+  return matching.size > 0 ? matching : null;
+}
+
 // ---------------------------------------------------------------------------
 // Render tree as HTML nodes + SVG connectors
 // ---------------------------------------------------------------------------
@@ -260,11 +277,21 @@ async function renderTree() {
     if (tree) trees.push(tree);
   }
 
-  // Apply search filter
+  // Apply tag filter
   let filteredTrees = trees;
+  const tagMatchingFens = await getTagMatchingFens(tagFilter);
+  if (tagMatchingFens) {
+    filteredTrees = filteredTrees.map(t => filterTree(t, tagMatchingFens)).filter(Boolean);
+    if (filteredTrees.length === 0) {
+      treeEl.innerHTML = '<div class="tree-empty">No lines match the selected tag.</div>';
+      return;
+    }
+  }
+
+  // Apply search filter
   const matchingFens = await getMatchingFens(searchFilter);
   if (matchingFens) {
-    filteredTrees = trees.map(t => filterTree(t, matchingFens)).filter(Boolean);
+    filteredTrees = filteredTrees.map(t => filterTree(t, matchingFens)).filter(Boolean);
     if (filteredTrees.length === 0) {
       treeEl.innerHTML = '<div class="tree-empty">No matching positions found.</div>';
       return;
@@ -650,10 +677,24 @@ export default {
     panX = 20;
     panY = 0;
 
+    // Collect all unique tags for filter dropdown
+    const allLines = await db.getAll('lines');
+    const allTagSet = new Set();
+    for (const line of allLines) {
+      if (Array.isArray(line.tags)) {
+        for (const t of line.tags) allTagSet.add(t);
+      }
+    }
+    const tagOptions = [...allTagSet].sort().map(t => `<option value="${t}">${t}</option>`).join('');
+
     container.innerHTML = `
       <div class="browse-page">
         <div class="browse-toolbar">
           <input type="text" id="browse-search-input" placeholder="Search by name..." />
+          <select id="browse-tag-filter" title="Filter by tag">
+            <option value="">All tags</option>
+            ${tagOptions}
+          </select>
           <div class="zoom-controls">
             <button id="btn-zoom-out" title="Zoom out">−</button>
             <span id="zoom-level">100%</span>
@@ -670,6 +711,12 @@ export default {
 
     // Search
     container.querySelector('#browse-search-input').addEventListener('input', handleSearch);
+
+    // Tag filter
+    container.querySelector('#browse-tag-filter').addEventListener('change', (e) => {
+      tagFilter = e.target.value;
+      renderTree();
+    });
 
     // Zoom controls
     container.querySelector('#btn-zoom-in').addEventListener('click', zoomIn);
@@ -703,6 +750,7 @@ export default {
     if (containerEl) { containerEl.innerHTML = ''; containerEl = null; }
     selectedFen = null;
     searchFilter = '';
+    tagFilter = '';
     navigateFn = null;
   },
 
@@ -713,4 +761,5 @@ export default {
   async _selectNode(fen) { await selectNode(fen); },
   async _renderTree() { await renderTree(); },
   _setSearch(text) { searchFilter = text; return renderTree(); },
+  _setTagFilter(tag) { tagFilter = tag; return renderTree(); },
 };

@@ -770,6 +770,12 @@ select:focus {
   width: 220px;
 }
 
+.browse-toolbar select {
+  width: 160px;
+  height: 32px;
+  font-size: 13px;
+}
+
 .zoom-controls {
   display: flex;
   align-items: center;
