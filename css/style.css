@@ -329,6 +329,58 @@ select:focus {
   font-style: italic;
 }
 
+/* --- Browse detail color section --- */
+
+.detail-color-section {
+  margin: 10px 0;
+  padding: 8px;
+  background: var(--bg-secondary);
+  border-radius: 6px;
+  border: 1px solid var(--border);
+}
+
+.detail-color-section > label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+}
+
+.detail-color-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.color-summary {
+  font-size: 13px;
+  color: var(--text-primary);
+  margin-right: auto;
+}
+
+.btn-color-toggle {
+  padding: 3px 10px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.btn-color-toggle:hover {
+  background: var(--bg-hover);
+}
+
+.btn-color-toggle.active {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
 /* --- Browse detail tag section --- */
 
 .detail-tag-section {

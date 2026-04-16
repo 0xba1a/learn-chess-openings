@@ -625,19 +625,18 @@ export async function deleteLine(lineId) {
 // ---------------------------------------------------------------------------
 
 /**
- * Delete all nodes, edges, and lines within the subtree rooted at fen.
+ * Delete all lines passing through fen, then clean up orphaned
+ * nodes and edges in the subtree that are no longer referenced
+ * by any surviving line.
  *
  * @param {string} fen
  * @returns {Promise<void>}
  */
 export async function deleteSubtree(fen) {
-  const subtree = await _getSubtree(fen);
-
-  // 1. Delete all lines that pass through any node in subtree
+  // 1. Delete only lines that pass through the clicked node itself
   const allLines = await db.getAll('lines');
   for (const line of allLines) {
-    if (line.fens.some((f) => subtree.fens.has(f))) {
-      // Delete names record
+    if (line.fens.includes(fen)) {
       const nameRecs = await db.getAllByIndex('names', 'byLineId', line.id);
       if (nameRecs.length > 0) {
         await db.del('names', nameRecs[0].id);
@@ -646,19 +645,33 @@ export async function deleteSubtree(fen) {
     }
   }
 
-  // 2. Delete all edges in subtree
+  // 2. Collect FENs still referenced by surviving lines
+  const remainingLines = await db.getAll('lines');
+  const liveFens = new Set();
+  for (const line of remainingLines) {
+    for (const f of line.fens) liveFens.add(f);
+  }
+
+  // 3. Walk the subtree from fen; delete orphaned nodes and edges
+  const subtree = await _getSubtree(fen);
+
   for (const edge of subtree.edges) {
-    await db.del('edges', edge.id);
+    if (!liveFens.has(edge.parentFen) || !liveFens.has(edge.childFen)) {
+      await db.del('edges', edge.id);
+    }
   }
 
-  // 3. Delete all nodes in subtree
   for (const node of subtree.nodes) {
-    await db.del('nodes', node.fen);
+    if (!liveFens.has(node.fen)) {
+      await db.del('nodes', node.fen);
+    }
   }
 
-  // 4. Delete incoming edges TO the root of the subtree
-  const incoming = await db.getAllByIndex('edges', 'byChild', fen);
-  for (const edge of incoming) {
-    await db.del('edges', edge.id);
+  // 4. Delete incoming edges to the subtree root if it was removed
+  if (!liveFens.has(fen)) {
+    const incoming = await db.getAllByIndex('edges', 'byChild', fen);
+    for (const edge of incoming) {
+      await db.del('edges', edge.id);
+    }
   }
 }

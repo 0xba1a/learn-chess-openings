@@ -479,6 +479,15 @@ async function selectNode(fen) {
         <span>Children: <strong>${children.length}</strong></span>
       </div>
 
+      ${linesThrough.length > 0 ? `<div class="detail-color-section">
+        <label>Subtree Color:</label>
+        <div class="detail-color-toggle">
+          <span class="color-summary">${(() => { const wc = linesThrough.filter(l => l.color === 'white').length; const bc = linesThrough.filter(l => l.color === 'black').length; if (wc && !bc) return '&#9812; White'; if (bc && !wc) return '&#9818; Black'; return `&#9812; ${wc} White, &#9818; ${bc} Black`; })()}</span>
+          <button id="btn-set-color-white" class="btn-color-toggle${linesThrough.every(l => l.color === 'white') ? ' active' : ''}" title="Set all subtree lines to White">&#9812; White</button>
+          <button id="btn-set-color-black" class="btn-color-toggle${linesThrough.every(l => l.color === 'black') ? ' active' : ''}" title="Set all subtree lines to Black">&#9818; Black</button>
+        </div>
+      </div>` : ''}
+
       <div class="detail-tag-section">
         <label>Subtree Tags:</label>
         <div class="tag-chips-container" id="detail-subtree-tags">
@@ -605,6 +614,32 @@ async function selectNode(fen) {
     if (miniBoard) { miniBoard.destroy(); miniBoard = null; }
     await renderTree();
   });
+
+  // --- Subtree Color change ---
+  const setColorWhiteBtn = detailEl.querySelector('#btn-set-color-white');
+  const setColorBlackBtn = detailEl.querySelector('#btn-set-color-black');
+  if (setColorWhiteBtn) {
+    setColorWhiteBtn.addEventListener('click', async () => {
+      for (const line of linesThrough) {
+        if (line.color !== 'white') {
+          line.color = 'white';
+          await db.put('lines', line);
+        }
+      }
+      await selectNode(fen);
+    });
+  }
+  if (setColorBlackBtn) {
+    setColorBlackBtn.addEventListener('click', async () => {
+      for (const line of linesThrough) {
+        if (line.color !== 'black') {
+          line.color = 'black';
+          await db.put('lines', line);
+        }
+      }
+      await selectNode(fen);
+    });
+  }
 
   // --- Subtree Tag management ---
 
