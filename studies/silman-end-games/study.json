@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "exportedAt": "2026-04-20T06:05:16.087Z",
+  "exportedAt": "2026-05-18T05:35:51.203Z",
   "data": {
     "nodes": [
       {
@@ -7991,7 +7991,7 @@
       },
       {
         "label": "1.c2 lines",
-        "color": "black",
+        "color": "white",
         "rootFen": "7K/8/2N5/8/8/2pk4/8/8 b - -",
         "leafFen": "7K/8/8/8/8/8/2k5/8 w - -",
         "fens": [
@@ -8012,17 +8012,17 @@
         "tags": [
           "Silman End Game Course"
         ],
-        "easeFactor": 2.5,
-        "interval": 0,
-        "repetitions": 0,
-        "nextReviewDate": 0,
-        "lastReviewDate": null,
+        "easeFactor": 2.6,
+        "interval": 1,
+        "repetitions": 1,
+        "nextReviewDate": 1779168747645,
+        "lastReviewDate": 1779082347645,
         "createdAt": 1776322527867,
         "id": 46
       },
       {
         "label": "1.Kc4 lines > Kc4 variation",
-        "color": "black",
+        "color": "white",
         "rootFen": "7K/8/2N5/8/8/2pk4/8/8 b - -",
         "leafFen": "8/6K1/8/8/8/2k5/2p5/2N5 b - -",
         "fens": [
@@ -8073,11 +8073,11 @@
         "tags": [
           "Silman End Game Course"
         ],
-        "easeFactor": 2.5,
-        "interval": 0,
-        "repetitions": 0,
-        "nextReviewDate": 0,
-        "lastReviewDate": null,
+        "easeFactor": 2.36,
+        "interval": 1,
+        "repetitions": 1,
+        "nextReviewDate": 1779168837213,
+        "lastReviewDate": 1779082437213,
         "createdAt": 1776322683341,
         "id": 47
       },
